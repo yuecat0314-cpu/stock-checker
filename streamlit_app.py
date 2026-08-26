@@ -14,7 +14,6 @@ MANUAL_DIV_FILE = "manual_dividends.json"
 JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
-# 永続化ファイルがあるため初期データは空
 INIT_DATA = {}
 
 def norm_c(c):
@@ -39,7 +38,6 @@ def save_manual_dividends(m_divs):
 if "manual_divs" not in st.session_state:
     st.session_state.manual_divs = load_manual_dividends()
 
-# --- 配当データの堅牢な取得層（手動優先 ＋ 多重フォールバック） ---
 def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, "N/A", None
@@ -49,27 +47,23 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     div_y = 0.0
     annual_d = 0.0
 
-    # 1. 【最優先】手動固定値
     if code_norm in st.session_state.manual_divs:
         annual_d = st.session_state.manual_divs[code_norm]
         div_y = (annual_d / float(cur_price)) * 100
         source_type = "手動固定"
     else:
-        # 2. dividendYield からの取得を試みる
         raw_y = info_dict.get("dividendYield")
         if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
             raw_val = float(raw_y)
             div_y = raw_val * 100 if raw_val < 0.20 else raw_val
             annual_d = (div_y / 100.0) * float(cur_price)
         
-        # 3. 取れなければ dividendRate / trailingAnnualDividendRate から算出
         if div_y == 0.0:
             d_rate = info_dict.get("dividendRate") or info_dict.get("trailingAnnualDividendRate")
             if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
                 annual_d = float(d_rate)
                 div_y = (annual_d / float(cur_price)) * 100
 
-        # 4. それでも取れなければ直近365日の配当履歴からフォールバック
         if div_y == 0.0 and ticker_obj is not None:
             try:
                 div_hist = ticker_obj.dividends
@@ -442,24 +436,24 @@ if not df_all.empty:
     
     signals = []
     if not valid_df.empty:
-        # 1. 押し目候補を拡充（25日乖離 -1.0%以下 ＆ 本日マイナス調整中）
+        # 1. 押し目候補（最大3件）
         dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
-        for _, r in dip_df.head(5).iterrows():
+        for _, r in dip_df.head(3).iterrows():
             signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
         
-        # 2. 過熱注意（最大3件に制限）
+        # 2. 過熱中（最大3件・簡略フォーマット：1W / 25d）
         heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
         for _, r in heat_df.head(3).iterrows():
-            signals.append(f"🔴 **【過熱注意】** {r['銘柄名']} ({r['コード']}): 1週 `{r['1週']:+.1f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`")
+            signals.append(f"🔴 **【過熱中】** {r['銘柄名']} ({r['コード']}): 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
         
-        # 3. 高利回りTOP5
+        # 3. 高利回り（最大3件・簡略フォーマット）
         high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
-        for _, r in high_yield_df.head(5).iterrows():
-            signals.append(f"💰 **【高利回りTOP】** {r['銘柄名']} ({r['コード']}): 利回り `{r['利回り']:.2f}%`")
+        for _, r in high_yield_df.head(3).iterrows():
+            signals.append(f"💰 **【高利回り】** {r['銘柄名']} ({r['コード']}): `{r['利回り']:.2f}%`")
     
-    st.subheader("🚨 今日見るべき注目シグナル ＆ 高利回りTOP5")
+    st.subheader("🚨 注目シグナル ＆ 参考高利回り")
     if signals:
-        for s in signals[:10]: st.markdown(f"- {s}")
+        for s in signals: st.markdown(f"- {s}")
     else:
         st.success("✅ 現在、該当するシグナルはありません。")
     st.divider()
@@ -473,7 +467,7 @@ if not df_all.empty:
         try:
             styler = v_sub.style
             m_fn = styler.map if hasattr(styler, 'map') else styler.applymap
-            styled = m_fn(color_cells, subset=['前日差', '前日比', '1週', '25日乖離']).format({'現在値': '{:,.1f} 円', '前日差': '{:+,.1f} 円', '前日比': '{:+.2f}%', '1週': '{:+.2f}%', '25日乖離': '{:+.2f}%', '利回り': '{:.2f}%'}, na_rep='-')
+            styled = m_fn(color_cells, subset=['前日差', '前日比', '1週', '25日乖離']).format({'现在値': '{:,.1f} 円', '前日差': '{:+,.1f} 円', '前日比': '{:+.2f}%', '1週': '{:+.2f}%', '25日乖離': '{:+.2f}%', '利回り': '{:.2f}%'}, na_rep='-')
             st.dataframe(styled, use_container_width=True, hide_index=True)
         except Exception:
             st.dataframe(v_sub, use_container_width=True, hide_index=True)
