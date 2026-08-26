@@ -13,7 +13,6 @@ NAMES_FILE = "company_names.json"
 MANUAL_DIV_FILE = "manual_dividends.json"
 JST = pytz.timezone('Asia/Tokyo')
 
-# タブのカテゴリ定義（「状態」列の代わりにタブで管理）
 STATUS_OPTS = ["保有中", "趣味"]
 
 INIT_DATA = {}
@@ -94,7 +93,7 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if source_type != "手動固定" and div_y >= 10.0:
         warn_msg = f"🚨 利回りが{div_y:.1f}%と高水準です。念のため公式開示情報をご確認ください。"
 
-    return div_y, annual_d, hist_actual_d, source_type, warn_msg
+    return div_y, annual_d, hist_div_actual, source_type, warn_msg
 
 def load_data():
     names, tags = {}, {}
@@ -113,7 +112,6 @@ def load_data():
                     tickers = list(d.keys())
                     for k, v in d.items(): 
                         val = v if v in STATUS_OPTS else "趣味"
-                        # 移行期：旧ステータスを吸収
                         if val == "💼 保有中": val = "保有中"
                         elif val in ["👀 監視中", "🎯 買いたい"]: val = "趣味"
                         tags[norm_c(k)] = val
@@ -376,13 +374,6 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
         })
     return pd.DataFrame(rows), now_str
 
-def color_txt(val, is_pct=True):
-    if pd.isna(val): return "-"
-    if is_pct:
-        return f"{val:+.2f}%" if val != 0 else "0.00%"
-    else:
-        return f"{val:+,.1f} 円" if val != 0 else "0.0 円"
-
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
@@ -436,7 +427,6 @@ st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻:
 if not df_all.empty:
     valid_df = df_all.dropna(subset=["現在値"])
     
-    # 注目シグナル（枠内表示）
     with st.container(border=True):
         st.markdown("##### 🚨 本日の注目シグナル ＆ 参考高利回り")
         has_signal = False
@@ -467,15 +457,14 @@ if not df_all.empty:
         
     st.divider()
 
-    # アイコン無しのクリーンなタブ定義
     tab_all, tab_hold, tab_hobby = st.tabs(["すべて", "保有中", "趣味"])
 
-    def render_action_list(target_df):
+    def render_action_list(target_df, tab_key_prefix):
         if target_df.empty:
             st.info("該当する銘柄はありません。")
             return
 
-        # ヘッダー行
+        # PC用ヘッダー
         h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.9, 1.5, 1.1, 1.1, 1.1, 1.1, 1.0, 2.2])
         h1.markdown("**コード**")
         h2.markdown("**銘柄名**")
@@ -490,42 +479,41 @@ if not df_all.empty:
         for _, row in target_df.iterrows():
             code = row["コード"]
             name = row["銘柄名"]
-            cur_p = row["现在値"] if "现在値" in row else row["現在値"]
+            cur_p = row["現在値"]
             diff_p = row["前日比"]
             w_p = row["1週"]
             dev25 = row["25日乖離"]
             yld = row["利回り"]
             current_tag = st.session_state.company_tags.get(code, "趣味")
 
+            # PC向け一行表示
             c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.9, 1.5, 1.1, 1.1, 1.1, 1.1, 1.0, 2.2])
             
             c1.text(code)
             c2.text(name)
             c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
             
-            # カラー装飾付きテキスト
             c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
             c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
             c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
             c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
 
-            # 操作ボタン群（診断、移動、削除）
             b_diag, b_move, b_del = c8.columns(3)
             
-            if b_diag.button("🔍", key=f"diag_{code}", help="診断"):
+            # タブごとにユニークなキー（prefix）を付与して重複エラーを完全回避
+            if b_diag.button("🔍", key=f"diag_{tab_key_prefix}_{code}", help="診断"):
                 show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
             
-            # タブ移動ボタン（保有中 ⇄ 趣味）
             target_next = "趣味" if current_tag == "保有中" else "保有中"
             move_label = "趣味" if current_tag == "保有中" else "保有"
-            if b_move.button(move_label, key=f"move_{code}", help=f"「{target_next}」へ移動"):
+            if b_move.button(move_label, key=f"move_{tab_key_prefix}_{code}", help=f"「{target_next}」へ移動"):
                 cur_t = dict(st.session_state.company_tags)
                 cur_t[code] = target_next
                 save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
                 st.toast(f"{name} を「{target_next}」に移動しました！")
                 st.rerun()
 
-            if b_del.button("🗑️", key=f"del_{code}", help="削除"):
+            if b_del.button("🗑️", key=f"del_{tab_key_prefix}_{code}", help="削除"):
                 new_w = [w for w in st.session_state.watchlist if w != code]
                 cur_n = dict(st.session_state.company_names)
                 cur_t = dict(st.session_state.company_tags)
@@ -536,15 +524,15 @@ if not df_all.empty:
                 st.rerun()
 
     with tab_all:
-        render_action_list(df_all)
+        render_action_list(df_all, "all")
         
     with tab_hold:
         hold_df = df_all[df_all["コード"].apply(lambda c: st.session_state.company_tags.get(c, "趣味") == "保有中")]
-        render_action_list(hold_df)
+        render_action_list(hold_df, "hold")
         
     with tab_hobby:
         hobby_df = df_all[df_all["コード"].apply(lambda c: st.session_state.company_tags.get(c, "趣味") == "趣味")]
-        render_action_list(hobby_df)
+        render_action_list(hobby_df, "hobby")
 
     st.divider()
     st.subheader("🔍 銘柄個別クイック診断")
