@@ -17,6 +17,20 @@ STATUS_OPTS = ["監視", "保有", "趣味"]
 
 INIT_DATA = {}
 
+# スマホでも表が縦に崩れず、横スライド（スクロール）できるようにするCSS
+st.markdown("""
+<style>
+.scroll-table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 8px;
+}
+.scroll-table-inner {
+    min-width: 750px; /* スマホでも横並びが潰れない最低幅 */
+}
+</style>
+""", unsafe_allow_html=True)
+
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
@@ -421,7 +435,6 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
 with st.spinner("株価データ読込中..."):
     df_prices = fetch_watchlist_data_cached(tuple(st.session_state.watchlist))
 
-# データベースと価格データを結合
 rows = []
 for c in st.session_state.watchlist:
     tag = st.session_state.company_tags.get(c, "監視")
@@ -504,7 +517,6 @@ if not df_all.empty:
             key=f"sort_{tab_key_prefix}"
         )
 
-        # ソート処理
         d_sorted = target_df.copy()
         if "コード順 (昇順)" in sort_opt:
             d_sorted = d_sorted.sort_values(by="コード", ascending=True)
@@ -523,71 +535,72 @@ if not df_all.empty:
         elif "1週間の上昇が大きい順" in sort_opt:
             d_sorted = d_sorted.sort_values(by="1週", ascending=False, na_position="last")
 
-        # 横スクロール可能なコンテナで包むことで、スマホでも表が崩れずスワイプ可能に！
-        with st.container(border=False):
-            # ヘッダー行
-            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
-            h1.markdown("**コード**")
-            h2.markdown("**銘柄名**")
-            h3.markdown("**現在値**")
-            h4.markdown("**前日比**")
-            h5.markdown("**1週**")
-            h6.markdown("**25日乖離**")
-            h7.markdown("**利回り**")
-            h8.markdown("**操作 (診断 / 移動 / 削除)**")
-            st.markdown("---")
+        # 横スクロール可能なラッパーで包み、スマホでも縦崩れさせずにスワイプ可能に
+        st.markdown('<div class="scroll-table-wrapper"><div class="scroll-table-inner">', unsafe_allow_html=True)
 
-            for _, row in d_sorted.iterrows():
-                code = row["コード"]
-                name = row["銘柄名"]
-                cur_p = row["現在値"]
-                diff_p = row["前日比"]
-                w_p = row["1週"]
-                dev25 = row["25日乖離"]
-                yld = row["利回り"]
-                current_tag = st.session_state.company_tags.get(code, "監視")
+        # ヘッダー行
+        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
+        h1.markdown("**コード**")
+        h2.markdown("**銘柄名**")
+        h3.markdown("**現在値**")
+        h4.markdown("**前日比**")
+        h5.markdown("**1週**")
+        h6.markdown("**25日乖離**")
+        h7.markdown("**利回り**")
+        h8.markdown("**操作 (診断 / 移動 / 削除)**")
+        st.markdown("---")
 
-                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
-                
-                c1.text(code)
-                c2.text(name)
-                c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
-                
-                c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
-                c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
-                c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
-                c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
+        for _, row in d_sorted.iterrows():
+            code = row["コード"]
+            name = row["銘柄名"]
+            cur_p = row["現在値"]
+            diff_p = row["前日比"]
+            w_p = row["1週"]
+            dev25 = row["25日乖離"]
+            yld = row["利回り"]
+            current_tag = st.session_state.company_tags.get(code, "監視")
 
-                # 操作部分：[診断ボタン] + [タブ変更セレクト] + [削除ボタン]
-                b_diag, b_sel, b_del = c8.columns([1.0, 1.6, 0.9])
-                
-                if b_diag.button("🔍 診断", key=f"diag_{tab_key_prefix}_{code}"):
-                    show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
-                
-                # 行ごとのタブ変更セレクト（選んだ瞬間にメモリ上で瞬時に移動・即保存）
-                new_tag = b_sel.selectbox(
-                    "移動", 
-                    STATUS_OPTS, 
-                    index=STATUS_OPTS.index(current_tag) if current_tag in STATUS_OPTS else 0,
-                    key=f"tag_sel_{tab_key_prefix}_{code}",
-                    label_visibility="collapsed"
-                )
-                if new_tag != current_tag:
-                    cur_t = dict(st.session_state.company_tags)
-                    cur_t[code] = new_tag
-                    save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
-                    st.toast(f"{name} を「{new_tag}」に移動しました！")
-                    st.rerun()
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
+            
+            c1.text(code)
+            c2.text(name)
+            c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
+            
+            c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
+            c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
+            c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
+            c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
 
-                if b_del.button("🗑️ 削除", key=f"del_{tab_key_prefix}_{code}"):
-                    new_w = [w for w in st.session_state.watchlist if w != code]
-                    cur_n = dict(st.session_state.company_names)
-                    cur_t = dict(st.session_state.company_tags)
-                    cur_n.pop(code, None)
-                    cur_t.pop(code, None)
-                    save_data(new_w, cur_n, cur_t)
-                    st.toast(f"{name} を削除しました。")
-                    st.rerun()
+            b_diag, b_sel, b_del = c8.columns([1.0, 1.6, 0.9])
+            
+            if b_diag.button("🔍 診断", key=f"diag_{tab_key_prefix}_{code}"):
+                show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
+            
+            new_tag = b_sel.selectbox(
+                "移動", 
+                STATUS_OPTS, 
+                index=STATUS_OPTS.index(current_tag) if current_tag in STATUS_OPTS else 0,
+                key=f"tag_sel_{tab_key_prefix}_{code}",
+                label_visibility="collapsed"
+            )
+            if new_tag != current_tag:
+                cur_t = dict(st.session_state.company_tags)
+                cur_t[code] = new_tag
+                save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
+                st.toast(f"{name} を「{new_tag}」に移動しました！")
+                st.rerun()
+
+            if b_del.button("🗑️ 削除", key=f"del_{tab_key_prefix}_{code}"):
+                new_w = [w for w in st.session_state.watchlist if w != code]
+                cur_n = dict(st.session_state.company_names)
+                cur_t = dict(st.session_state.company_tags)
+                cur_n.pop(code, None)
+                cur_t.pop(code, None)
+                save_data(new_w, cur_n, cur_t)
+                st.toast(f"{name} を削除しました。")
+                st.rerun()
+
+        st.markdown('</div></div>', unsafe_allow_html=True)
 
     with tab_all:
         render_action_list(df_all, "all")
