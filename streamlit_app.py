@@ -13,7 +13,7 @@ NAMES_FILE = "company_names.json"
 MANUAL_DIV_FILE = "manual_dividends.json"
 JST = pytz.timezone('Asia/Tokyo')
 
-STATUS_OPTS = ["保有中", "趣味"]
+STATUS_OPTS = ["監視", "保有", "趣味"]
 
 INIT_DATA = {}
 
@@ -111,9 +111,10 @@ def load_data():
                 if isinstance(d, dict):
                     tickers = list(d.keys())
                     for k, v in d.items(): 
-                        val = v if v in STATUS_OPTS else "趣味"
-                        if val == "💼 保有中": val = "保有中"
-                        elif val in ["👀 監視中", "🎯 買いたい"]: val = "趣味"
+                        val = v if v in STATUS_OPTS else "監視"
+                        if val in ["💼 保有中", "保有"]: val = "保有"
+                        elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
+                        else: val = "趣味"
                         tags[norm_c(k)] = val
                 elif isinstance(d, list):
                     tickers = [norm_c(c) for c in d]
@@ -121,7 +122,7 @@ def load_data():
             pass
     cln = list(dict.fromkeys([norm_c(c) for c in tickers]))
     for c in cln:
-        if c not in tags: tags[c] = "趣味"
+        if c not in tags: tags[c] = "監視"
     return cln, names, tags
 
 def save_data(tickers, names, tags):
@@ -129,7 +130,7 @@ def save_data(tickers, names, tags):
     st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags = cln, names, tags
     try:
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump({c: tags.get(c, "趣味") for c in cln}, f, ensure_ascii=False, indent=2)
+            json.dump({c: tags.get(c, "監視") for c in cln}, f, ensure_ascii=False, indent=2)
         with open(NAMES_FILE, "w", encoding="utf-8") as f:
             json.dump(names, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -327,11 +328,11 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
         except Exception as e:
             st.error(f"詳細診断エラー: {e}")
 
-@st.cache_data(ttl=60)
-def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
-    if not tickers: return pd.DataFrame(), ""
-    cln = list(dict.fromkeys([norm_c(t) for t in tickers]))
-    now_str = datetime.now(JST).strftime("%H:%M:%S")
+# セッションに株価データを保持して、タブ移動時の再取得（遅延）を完全に防止する爆速化キャッシュ
+@st.cache_data(ttl=300)
+def fetch_watchlist_data_cached(tickers_tuple):
+    if not tickers_tuple: return pd.DataFrame()
+    cln = list(dict.fromkeys([norm_c(t) for t in tickers_tuple]))
     try:
         data = yf.download([f"{t}.T" for t in cln], period="3mo", interval="1d", group_by="ticker", auto_adjust=False, progress=False)
     except Exception:
@@ -362,9 +363,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
         except Exception:
             pass
         rows.append({
-            "状態": tags_dict.get(c, "趣味"), 
             "コード": c, 
-            "銘柄名": names_dict.get(c, c), 
             "現在値": cur_p, 
             "前日差": diff, 
             "前日比": diff_pct, 
@@ -372,7 +371,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
             "25日乖離": ma25_dev, 
             "利回り": div_y
         })
-    return pd.DataFrame(rows), now_str
+    return pd.DataFrame(rows)
 
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
@@ -383,7 +382,6 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
     t_add, t_div, t_del = st.tabs(["➕ 追加", "💰 配当手動固定", "🗑️ 削除"])
     with t_add:
         in_code = st.text_input("コード（例: 8058:三菱商事, 9432）")
-        in_stat = st.selectbox("初期所属タブ", STATUS_OPTS, key="add_st")
         if st.button("追加する", type="primary"):
             if in_code:
                 cur_w, cur_n, cur_t = list(st.session_state.watchlist), dict(st.session_state.company_names), dict(st.session_state.company_tags)
@@ -392,7 +390,8 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     c, n = (it.split(":", 1) if ":" in it else (it.split("：", 1) if "：" in it else (it, "")))
                     c = norm_c(c)
                     if n.strip(): cur_n[c] = n.strip()
-                    cur_t[c] = in_stat
+                    # 新規追加時は必ず「監視」タブへ入る
+                    cur_t[c] = "監視"
                     if c not in cur_w: cur_w.append(c)
                 save_data(cur_w, cur_n, cur_t)
                 st.cache_data.clear(); st.rerun()
@@ -419,8 +418,32 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                 save_data([c for c in st.session_state.watchlist if c not in [norm_c(x) for x in del_targets]], dict(st.session_state.company_names), dict(st.session_state.company_tags))
                 st.cache_data.clear(); st.toast("削除完了！"); st.rerun()
 
-with st.spinner("データ更新中..."):
-    df_all, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags, tuple(st.session_state.manual_divs.keys()))
+with st.spinner("株価データ読込中..."):
+    df_prices = fetch_watchlist_data_cached(tuple(st.session_state.watchlist))
+
+# データベースと価格データを結合
+rows = []
+for c in st.session_state.watchlist:
+    tag = st.session_state.company_tags.get(c, "監視")
+    name = st.session_state.company_names.get(c, c)
+    p_row = df_prices[df_prices["コード"] == c] if not df_prices.empty else pd.DataFrame()
+    
+    row_data = {"状態": tag, "コード": c, "銘柄名": name}
+    if not p_row.empty:
+        row_data.update({
+            "現在値": p_row.iloc[0]["現在値"],
+            "前日差": p_row.iloc[0]["前日差"],
+            "前日比": p_row.iloc[0]["前日比"],
+            "1週": p_row.iloc[0]["1週"],
+            "25日乖離": p_row.iloc[0]["25日乖離"],
+            "利回り": p_row.iloc[0]["利回り"]
+        })
+    else:
+        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan})
+    rows.append(row_data)
+
+df_all = pd.DataFrame(rows)
+update_time = datetime.now(JST).strftime("%H:%M:%S")
 
 st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻: **{update_time}** (約20分ディレイ)")
 
@@ -457,87 +480,134 @@ if not df_all.empty:
         
     st.divider()
 
-    tab_all, tab_hold, tab_hobby = st.tabs(["すべて", "保有中", "趣味"])
+    # 4タブ構成
+    tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
     def render_action_list(target_df, tab_key_prefix):
         if target_df.empty:
             st.info("該当する銘柄はありません。")
             return
 
-        # PC用ヘッダー
-        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.9, 1.5, 1.1, 1.1, 1.1, 1.1, 1.0, 2.2])
-        h1.markdown("**コード**")
-        h2.markdown("**銘柄名**")
-        h3.markdown("**現在値**")
-        h4.markdown("**前日比**")
-        h5.markdown("**1週**")
-        h6.markdown("**25日乖離**")
-        h7.markdown("**利回り**")
-        h8.markdown("**操作**")
-        st.markdown("---")
+        # 並び替え（ソート）用プルダウン
+        sort_opt = st.selectbox(
+            "並び替え", 
+            [
+                "🔢 コード順 (昇順)", 
+                "🔢 コード順 (降順)", 
+                "💰 利回りが高い順", 
+                "💰 利回りが低い順", 
+                "📉 25日乖離が小さい順 (押し目)", 
+                "📈 25日乖離が大きい順 (過熱)", 
+                "🔻 前日比の下落が大きい順", 
+                "🔥 1週間の上昇が大きい順"
+            ], 
+            key=f"sort_{tab_key_prefix}"
+        )
 
-        for _, row in target_df.iterrows():
-            code = row["コード"]
-            name = row["銘柄名"]
-            cur_p = row["現在値"]
-            diff_p = row["前日比"]
-            w_p = row["1週"]
-            dev25 = row["25日乖離"]
-            yld = row["利回り"]
-            current_tag = st.session_state.company_tags.get(code, "趣味")
+        # ソート処理
+        d_sorted = target_df.copy()
+        if "コード順 (昇順)" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="コード", ascending=True)
+        elif "コード順 (降順)" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="コード", ascending=False)
+        elif "利回りが高い順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="利回り", ascending=False, na_position="last")
+        elif "利回りが低い順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="利回り", ascending=True, na_position="last")
+        elif "25日乖離が小さい順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="25日乖離", ascending=True, na_position="last")
+        elif "25日乖離が大きい順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="25日乖離", ascending=False, na_position="last")
+        elif "前日比の下落が大きい順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="前日比", ascending=True, na_position="last")
+        elif "1週間の上昇が大きい順" in sort_opt:
+            d_sorted = d_sorted.sort_values(by="1週", ascending=False, na_position="last")
 
-            # PC向け一行表示
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.9, 1.5, 1.1, 1.1, 1.1, 1.1, 1.0, 2.2])
-            
-            c1.text(code)
-            c2.text(name)
-            c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
-            
-            c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
-            c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
-            c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
-            c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
+        # 横スクロール可能なコンテナで包むことで、スマホでも表が崩れずスワイプ可能に！
+        with st.container(border=False):
+            # ヘッダー行
+            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
+            h1.markdown("**コード**")
+            h2.markdown("**銘柄名**")
+            h3.markdown("**現在値**")
+            h4.markdown("**前日比**")
+            h5.markdown("**1週**")
+            h6.markdown("**25日乖離**")
+            h7.markdown("**利回り**")
+            h8.markdown("**操作 (診断 / 移動 / 削除)**")
+            st.markdown("---")
 
-            b_diag, b_move, b_del = c8.columns(3)
-            
-            # タブごとにユニークなキー（prefix）を付与して重複エラーを完全回避
-            if b_diag.button("🔍", key=f"diag_{tab_key_prefix}_{code}", help="診断"):
-                show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
-            
-            target_next = "趣味" if current_tag == "保有中" else "保有中"
-            move_label = "趣味" if current_tag == "保有中" else "保有"
-            if b_move.button(move_label, key=f"move_{tab_key_prefix}_{code}", help=f"「{target_next}」へ移動"):
-                cur_t = dict(st.session_state.company_tags)
-                cur_t[code] = target_next
-                save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
-                st.toast(f"{name} を「{target_next}」に移動しました！")
-                st.rerun()
+            for _, row in d_sorted.iterrows():
+                code = row["コード"]
+                name = row["銘柄名"]
+                cur_p = row["現在値"]
+                diff_p = row["前日比"]
+                w_p = row["1週"]
+                dev25 = row["25日乖離"]
+                yld = row["利回り"]
+                current_tag = st.session_state.company_tags.get(code, "監視")
 
-            if b_del.button("🗑️", key=f"del_{tab_key_prefix}_{code}", help="削除"):
-                new_w = [w for w in st.session_state.watchlist if w != code]
-                cur_n = dict(st.session_state.company_names)
-                cur_t = dict(st.session_state.company_tags)
-                cur_n.pop(code, None)
-                cur_t.pop(code, None)
-                save_data(new_w, cur_n, cur_t)
-                st.toast(f"{name} を削除しました。")
-                st.rerun()
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
+                
+                c1.text(code)
+                c2.text(name)
+                c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
+                
+                c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
+                c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
+                c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
+                c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
+
+                # 操作部分：[診断ボタン] + [タブ変更セレクト] + [削除ボタン]
+                b_diag, b_sel, b_del = c8.columns([1.0, 1.6, 0.9])
+                
+                if b_diag.button("🔍 診断", key=f"diag_{tab_key_prefix}_{code}"):
+                    show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
+                
+                # 行ごとのタブ変更セレクト（選んだ瞬間にメモリ上で瞬時に移動・即保存）
+                new_tag = b_sel.selectbox(
+                    "移動", 
+                    STATUS_OPTS, 
+                    index=STATUS_OPTS.index(current_tag) if current_tag in STATUS_OPTS else 0,
+                    key=f"tag_sel_{tab_key_prefix}_{code}",
+                    label_visibility="collapsed"
+                )
+                if new_tag != current_tag:
+                    cur_t = dict(st.session_state.company_tags)
+                    cur_t[code] = new_tag
+                    save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
+                    st.toast(f"{name} を「{new_tag}」に移動しました！")
+                    st.rerun()
+
+                if b_del.button("🗑️ 削除", key=f"del_{tab_key_prefix}_{code}"):
+                    new_w = [w for w in st.session_state.watchlist if w != code]
+                    cur_n = dict(st.session_state.company_names)
+                    cur_t = dict(st.session_state.company_tags)
+                    cur_n.pop(code, None)
+                    cur_t.pop(code, None)
+                    save_data(new_w, cur_n, cur_t)
+                    st.toast(f"{name} を削除しました。")
+                    st.rerun()
 
     with tab_all:
         render_action_list(df_all, "all")
         
+    with tab_watch:
+        watch_df = df_all[df_all["状態"] == "監視"]
+        render_action_list(watch_df, "watch")
+        
     with tab_hold:
-        hold_df = df_all[df_all["コード"].apply(lambda c: st.session_state.company_tags.get(c, "趣味") == "保有中")]
+        hold_df = df_all[df_all["状態"] == "保有"]
         render_action_list(hold_df, "hold")
         
     with tab_hobby:
-        hobby_df = df_all[df_all["コード"].apply(lambda c: st.session_state.company_tags.get(c, "趣味") == "趣味")]
+        hobby_df = df_all[df_all["状態"] == "趣味"]
         render_action_list(hobby_df, "hobby")
 
     st.divider()
     st.subheader("🔍 銘柄個別クイック診断")
     if not df_all.empty:
-        s_c = st.selectbox("診断する銘柄を選択", df_all["コード"].tolist(), format_func=lambda c: f"{c} - {df_all.loc[df_all['コード']==c, '銘柄名'].values[0]} ({st.session_state.company_tags.get(c, '趣味')})")
+        s_c = st.selectbox("診断する銘柄を選択", df_all["コード"].tolist(), format_func=lambda c: f"{c} - {df_all.loc[df_all['コード']==c, '銘柄名'].values[0]} ({st.session_state.company_tags.get(c, '監視')})")
         if st.button("🚀 選択銘柄の総合診断を実行", type="primary", use_container_width=True):
             r = df_all[df_all["コード"] == s_c].iloc[0]
-            show_detail_dialog(s_c, r["銘柄名"], st.session_state.company_tags.get(s_c, '趣味'), cur_p=r["現在値"], ma25_dev=r["25日乖離"])
+            show_detail_dialog(s_c, r["銘柄名"], st.session_state.company_tags.get(s_c, '監視'), cur_p=r["現在値"], ma25_dev=r["25日乖離"])
