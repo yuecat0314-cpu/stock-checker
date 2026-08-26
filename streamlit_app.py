@@ -46,7 +46,6 @@ def calc_dividend_yield(info_dict, cur_price, ticker_obj=None):
         try:
             div_hist = ticker_obj.dividends
             if not div_hist.empty:
-                # 直近365日の配当合計
                 d_rate = float(div_hist.last("365D").sum())
         except: pass
 
@@ -54,7 +53,6 @@ def calc_dividend_yield(info_dict, cur_price, ticker_obj=None):
     if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
         annual_div = float(d_rate)
         calc_yield = (annual_div / float(cur_price)) * 100
-        # 異常値ガード（普通株で25%を超えるものはデータ不正として弾く）
         if calc_yield <= 25.0:
             return calc_yield, annual_div
 
@@ -62,7 +60,6 @@ def calc_dividend_yield(info_dict, cur_price, ticker_obj=None):
     raw_y = info_dict.get("dividendYield", 0) or 0
     if raw_y:
         raw_val = float(raw_y)
-        # 0.035のような小数表記なら100倍、3.5のような%表記ならそのまま
         parsed_y = raw_val * 100 if raw_val < 0.20 else raw_val
         if parsed_y <= 25.0:
             return parsed_y, (parsed_y / 100.0) * float(cur_price)
@@ -118,45 +115,56 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             t = yf.Ticker(sym)
             info, inc, bal, cf, hist = t.info, t.financials, t.balance_sheet, t.cashflow, t.history(period="1y")
             
-            # 1. 健全性8指標判定
+            # 全指標変数を安全にデフォルト初期化（NameError完全防止）
             s_growth, s_g_desc = 50, "データ不足"
+            s_op, op_m = 50, 0.0
+            s_ni, s_ni_desc = 50, "データ不足"
+            s_profit, s_p_desc = 50, "データ不足"
+            s_div, s_div_desc = 60, "安定"
+            s_po, po_r = 60, 0.0
+            s_eq, eq_r = 50, 0.0
+            s_re, s_re_desc = 60, "安定"
+
+            # 1. 売上高成長
             if not inc.empty and "Total Revenue" in inc.index:
                 rev = inc.loc["Total Revenue"].dropna()[::-1]
                 if len(rev) >= 2:
                     yoy = ((rev.iloc[-1] / rev.iloc[0]) ** (1 / (len(rev)-1)) - 1) * 100
                     s_growth, s_g_desc = (100, f"◎ 年+{yoy:.1f}%") if yoy >= 3 else ((80, f"○ 成長(+{yoy:.1f}%)") if yoy > 0 else (30, f"✕ 縮小({yoy:.1f}%)"))
             
+            # 2. 営業利益率
             raw_m = info.get("operatingMargins", 0) or 0
             op_m = raw_m * 100 if raw_m < 1 else raw_m
             s_op = 100 if op_m >= 15 else (85 if op_m >= 10 else (65 if op_m >= 5 else 30))
             
-            s_ni, s_ni_desc = 50, "データ不足"
+            # 3. 純利益推移 & 4. 純利益安定性
             if not inc.empty and "Net Income" in inc.index:
                 ni = inc.loc["Net Income"].dropna()[::-1]
                 if len(ni) >= 2:
                     s_ni, s_ni_desc = (100, "◎ 増益基調") if ni.iloc[-1] > ni.iloc[0] and (ni > 0).all() else ((75, "○ 黒字維持") if (ni > 0).all() else (35, "✕ 減益/赤字"))
+                net_incomes = inc.loc["Net Income"].dropna()
+                s_profit, s_p_desc = (100, "◎ 連続黒字") if (net_incomes > 0).all() else (40, "△ 赤字あり/不足")
             
-            s_profit, s_p_desc = (100, "◎ 連続黒字") if not inc.empty and "Net Income" in inc.index and (inc.loc["Net Income"].dropna() > 0).all() else (40, "△ 赤字あり/不足")
-            
-            s_div, s_div_desc = 60, "安定"
+            # 5. 配当継続力
             if not cf.empty and "Cash Dividends Paid" in cf.index:
                 dp = cf.loc["Cash Dividends Paid"].dropna().abs()[::-1]
                 if len(dp) >= 2:
                     s_div, s_div_desc = (100, "◎ 非減配・増配") if (dp.diff().dropna() >= -0.05 * dp.iloc[0]).all() else (50, "△ 配当変動あり")
             
+            # 6. 配当性向
             raw_p = info.get("payoutRatio", 0) or 0
             po_r = raw_p * 100 if raw_p < 1 else raw_p
             s_po = 100 if 30 <= po_r <= 50 else (80 if (50 < po_r <= 65 or 20 <= po_r < 30) else (55 if po_r <= 80 else 25))
             
-            eq_r, s_eq = 0, 50
+            # 7. 自己資本比率
             if not bal.empty and "Stockholders Equity" in bal.index and "Total Assets" in bal.index:
                 ta = bal.loc["Total Assets"].dropna().iloc[0]
                 if ta > 0:
                     eq_r = (bal.loc["Stockholders Equity"].dropna().iloc[0] / ta) * 100
                     s_eq = 100 if eq_r >= 50 else (80 if eq_r >= 35 else (60 if eq_r >= 20 else 30))
             
-            s_re, s_re_desc = 60, "安定"
-            if not bal.empty and "Retained Earnings" in balance.index:
+            # 8. 利益剰余金
+            if not bal.empty and "Retained Earnings" in bal.index:
                 re_v = bal.loc["Retained Earnings"].dropna()[::-1]
                 if len(re_v) >= 2:
                     s_re, s_re_desc = (100, "◎ 蓄積中") if re_v.iloc[-1] > re_v.iloc[0] else (40, "△ 横ばい/減少")
@@ -165,7 +173,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             h_score = int(np.mean(h_scores))
             h_rank = "S" if h_score >= 85 else ("A" if h_score >= 70 else ("B" if h_score >= 55 else "C"))
             
-            # 2. 買い時スコア判定
+            # 買い時スコア判定
             cur_p = float(cur_p) if cur_p and not pd.isna(cur_p) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
             calc_y, annual_d = calc_dividend_yield(info, cur_p, ticker_obj=t)
             div_y = calc_y if (div_y is None or pd.isna(div_y)) else div_y
