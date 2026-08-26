@@ -14,9 +14,8 @@ MANUAL_DIV_FILE = "manual_dividends.json"
 JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
-INIT_DATA = {
-    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中"),
- }
+# 永続化ファイルがあるため初期データは空
+INIT_DATA = {}
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
@@ -40,36 +39,47 @@ def save_manual_dividends(m_divs):
 if "manual_divs" not in st.session_state:
     st.session_state.manual_divs = load_manual_dividends()
 
+# --- 配当データの堅牢な取得層（手動優先 ＋ 多重フォールバック） ---
 def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, "N/A", None
 
     code_norm = norm_c(code)
-    source_type = "自動取得(発表値)"
+    source_type = "自動取得"
     div_y = 0.0
     annual_d = 0.0
 
+    # 1. 【最優先】手動固定値
     if code_norm in st.session_state.manual_divs:
         annual_d = st.session_state.manual_divs[code_norm]
         div_y = (annual_d / float(cur_price)) * 100
         source_type = "手動固定"
     else:
+        # 2. dividendYield からの取得を試みる
         raw_y = info_dict.get("dividendYield")
         if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
             raw_val = float(raw_y)
             div_y = raw_val * 100 if raw_val < 0.20 else raw_val
             annual_d = (div_y / 100.0) * float(cur_price)
-        else:
-            raw_ty = info_dict.get("trailingAnnualDividendYield")
-            if raw_ty is not None and not pd.isna(raw_ty) and float(raw_ty) > 0:
-                raw_val = float(raw_ty)
-                div_y = raw_val * 100 if raw_val < 0.20 else raw_val
-                annual_d = (div_y / 100.0) * float(cur_price)
-            else:
-                d_rate = info_dict.get("dividendRate")
-                if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-                    annual_d = float(d_rate)
-                    div_y = (annual_d / float(cur_price)) * 100
+        
+        # 3. 取れなければ dividendRate / trailingAnnualDividendRate から算出
+        if div_y == 0.0:
+            d_rate = info_dict.get("dividendRate") or info_dict.get("trailingAnnualDividendRate")
+            if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+                annual_d = float(d_rate)
+                div_y = (annual_d / float(cur_price)) * 100
+
+        # 4. それでも取れなければ直近365日の配当履歴からフォールバック
+        if div_y == 0.0 and ticker_obj is not None:
+            try:
+                div_hist = ticker_obj.dividends
+                if not div_hist.empty:
+                    last_year_sum = float(div_hist.last("365D").sum())
+                    if last_year_sum > 0:
+                        annual_d = last_year_sum
+                        div_y = (annual_d / float(cur_price)) * 100
+            except Exception:
+                pass
 
     hist_div_actual = 0.0
     if ticker_obj is not None:
@@ -91,12 +101,11 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     return div_y, annual_d, hist_div_actual, source_type, warn_msg
 
 def load_data():
-    names = {norm_c(k): v[0] for k, v in INIT_DATA.items()}
-    tags = {norm_c(k): v[1] for k, v in INIT_DATA.items()}
+    names, tags = {}, {}
     if os.path.exists(NAMES_FILE):
         try:
             with open(NAMES_FILE, "r", encoding="utf-8") as f:
-                names.update({norm_c(k): str(v).strip() for k, v in json.load(f).items()})
+                names = {norm_c(k): str(v).strip() for k, v in json.load(f).items()}
         except Exception:
             pass
     tickers = list(names.keys())
@@ -433,28 +442,29 @@ if not df_all.empty:
     
     signals = []
     if not valid_df.empty:
-        # 1. 本物の押し目候補（25日線から下方乖離しつつ、本日もマイナスで調整中の銘柄）
-        for _, r in valid_df[(valid_df["25日乖離"] <= -2.5) & (valid_df["前日比"] < 0)].iterrows():
+        # 1. 押し目候補を拡充（25日乖離 -1.0%以下 ＆ 本日マイナス調整中）
+        dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
+        for _, r in dip_df.head(5).iterrows():
             signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
         
-        # 2. 過熱注意（1週間の急騰または25日線から上方乖離）
-        for _, r in valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].iterrows():
+        # 2. 過熱注意（最大3件に制限）
+        heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
+        for _, r in heat_df.head(3).iterrows():
             signals.append(f"🔴 **【過熱注意】** {r['銘柄名']} ({r['コード']}): 1週 `{r['1週']:+.1f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`")
         
-        # 3. 高利回りTOP5（利回りの高い順）
+        # 3. 高利回りTOP5
         high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
         for _, r in high_yield_df.head(5).iterrows():
             signals.append(f"💰 **【高利回りTOP】** {r['銘柄名']} ({r['コード']}): 利回り `{r['利回り']:.2f}%`")
     
     st.subheader("🚨 今日見るべき注目シグナル ＆ 高利回りTOP5")
     if signals:
-        for s in signals[:8]: st.markdown(f"- {s}")
+        for s in signals[:10]: st.markdown(f"- {s}")
     else:
         st.success("✅ 現在、該当するシグナルはありません。")
     st.divider()
 
     tab_all, tab_h, tab_b, tab_w = st.tabs([f"📋 すべて ({len(df_all)})", f"💼 保有中 ({len(df_all[df_all['状態'] == '💼 保有中'])})", f"🎯 買いたい ({len(df_all[df_all['状態'] == '🎯 買いたい'])})", f"👀 監視中 ({len(df_all[df_all['状態'] == '👀 監視中'])})"])
-    # メインの表に「25日乖離」の列を追加
     cols = ["状態", "コード", "銘柄名", "現在値", "前日差", "前日比", "1週", "25日乖離", "利回り"]
     
     def render_tbl(target_df):
