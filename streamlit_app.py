@@ -13,20 +13,17 @@ st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュ�
 
 WATCHLIST_FILE = "watchlist.json"
 
-# 初期銘柄リスト（ファイルがない場合の初期値）
 DEFAULT_TICKERS = [
     "8058", "3355", "9433", "2428", "4767", "4845", "2181", "1840", "7203", "2411",
     "9432", "9434", "8410", "4503", "5032", "5253", "8306", "8316", "8001", "2914"
 ]
 
-# --- 銘柄リストの読み込み・保存処理 ---
+# --- 銘柄リスト保存・復元 ---
 def load_watchlist():
-    # URLパラメータに保存されている場合は最優先
     if "tickers" in st.query_params:
-        param_tickers = [t.strip() for t in st.query_params["tickers"].split(",") if t.strip()]
+        param_tickers = [t.strip().upper() for t in st.query_params["tickers"].split(",") if t.strip()]
         if param_tickers:
             return param_tickers
-    # ローカルファイルからの読み込み
     if os.path.exists(WATCHLIST_FILE):
         try:
             with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
@@ -39,50 +36,62 @@ def load_watchlist():
 
 def save_watchlist(tickers):
     st.session_state.watchlist = tickers
-    # ファイル保存
     try:
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
             json.dump(tickers, f, ensure_ascii=False, indent=2)
     except:
         pass
-    # URLパラメータ保存（ブックマーク・再読込時に復元可能）
     st.query_params["tickers"] = ",".join(tickers)
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
 
-# --- 日本語企業名の取得（安定版） ---
-@st.cache_data(ttl=86400 * 7)
+# --- 日本語企業名取得（株探エンジン：海外サーバー対応） ---
+@st.cache_data(ttl=86400 * 30)
 def get_company_name_jp(code):
+    clean_code = str(code).strip().upper()
+    
+    # 1. 株探から日本語社名を取得
     try:
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        url = f"https://kabutan.jp/stock/?code={clean_code}"
         req = urllib.request.Request(
             url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
+            }
         )
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            match = re.search(r'<title>\s*(.*?)\s*【', html)
+            if match and match.group(1):
+                name = match.group(1).strip()
+                if name and "株探" not in name:
+                    return name
+    except:
+        pass
+
+    # 2. YahooファイナンスJPから取得（予備）
+    try:
+        url = f"https://finance.yahoo.co.jp/quote/{clean_code}.T"
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
             html = response.read().decode('utf-8', errors='ignore')
             match = re.search(r'<title>\s*(.*?)\s*【', html)
             if match and match.group(1):
                 return match.group(1).strip()
     except:
         pass
-    
-    # フォールバック（yfinanceの社名）
-    try:
-        t = yf.Ticker(f"{code}.T")
-        name = t.info.get("shortName") or t.info.get("longName")
-        if name:
-            return name
-    except:
-        pass
-        
-    return code
 
-# --- 8つのものさし詳細診断（ポップアップモーダル） ---
+    return clean_code
+
+# --- 8つのものさし詳細診断モーダル ---
 @st.dialog("📊 銘柄健全性・8つのものさし詳細診断", width="large")
 def show_detail_dialog(code, name):
-    ticker_symbol = f"{code}.T"
+    ticker_symbol = f"{str(code).strip().upper()}.T"
     st.caption(f"対象銘柄: **{name}** ({ticker_symbol})")
     
     with st.spinner("詳細な財務諸表と配当データを取得中..."):
@@ -204,16 +213,19 @@ def fetch_watchlist_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
-    symbols = [f"{t.strip()}.T" for t in tickers]
+    symbols = [f"{str(t).strip().upper()}.T" for t in tickers]
     data = yf.download(symbols, period="1mo", interval="1d", group_by="ticker", progress=False)
     
     rows = []
     for code in tickers:
-        sym = f"{code}.T"
+        code_str = str(code).strip().upper()
+        sym = f"{code_str}.T"
+        jp_name = get_company_name_jp(code_str)
         try:
             df = data[sym] if len(tickers) > 1 else data
             df = df.dropna(how="all")
             if len(df) < 2:
+                rows.append({"コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan})
                 continue
             
             cur_price = float(df["Close"].iloc[-1])
@@ -221,18 +233,15 @@ def fetch_watchlist_data(tickers):
             diff = cur_price - prev_price
             diff_pct = (diff / prev_price) * 100
             
-            # 1週間（5営業日前）との騰落率
             week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
             week_pct = ((cur_price - week_price) / week_price) * 100
 
             info = yf.Ticker(sym).info
             raw_yield = info.get("dividendYield", 0) or 0
             div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
-            
-            jp_name = get_company_name_jp(code)
 
             rows.append({
-                "コード": code,
+                "コード": code_str,
                 "銘柄名": jp_name,
                 "現在値": cur_price,
                 "前日差": diff,
@@ -242,7 +251,7 @@ def fetch_watchlist_data(tickers):
             })
         except:
             rows.append({
-                "コード": code, "銘柄名": get_company_name_jp(code),
+                "コード": code_str, "銘柄名": jp_name,
                 "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
                 "1週間騰落": np.nan, "配当利回り": np.nan
             })
@@ -267,13 +276,13 @@ with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
     with tab_add:
         c_add1, c_add2 = st.columns([3, 1])
         with c_add1:
-            new_code = st.text_input("銘柄コード（カンマ区切りで複数追加可能）", placeholder="例: 8058, 8001, 2914")
+            new_code = st.text_input("銘柄コード（カンマ区切りで複数追加可能）", placeholder="例: 8058, 8001, 197A")
         with c_add2:
             st.write("")
             st.write("")
             if st.button("追加する", type="primary", use_container_width=True):
                 if new_code:
-                    codes = [c.strip() for c in new_code.split(",") if c.strip()]
+                    codes = [c.strip().upper() for c in new_code.split(",") if c.strip()]
                     current = list(st.session_state.watchlist)
                     for c in codes:
                         if c not in current:
