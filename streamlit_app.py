@@ -4,32 +4,79 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import urllib.request
+import json
+import os
 import re
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュボード", layout="wide", page_icon="📈")
 
-# --- 初期監視銘柄リスト（自由に書き換え可能） ---
+WATCHLIST_FILE = "watchlist.json"
+
+# 初期銘柄リスト（ファイルがない場合の初期値）
 DEFAULT_TICKERS = [
-    "9432", "9434", "8410", "4503", "5032", "5253", "8306", "8316",
-    "8058", "8001", "2914", "1928", "8593", "9433", "7203"
+    "8058", "3355", "9433", "2428", "4767", "4845", "2181", "1840", "7203", "2411",
+    "9432", "9434", "8410", "4503", "5032", "5253", "8306", "8316", "8001", "2914"
 ]
 
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = DEFAULT_TICKERS.copy()
+# --- 銘柄リストの読み込み・保存処理 ---
+def load_watchlist():
+    # URLパラメータに保存されている場合は最優先
+    if "tickers" in st.query_params:
+        param_tickers = [t.strip() for t in st.query_params["tickers"].split(",") if t.strip()]
+        if param_tickers:
+            return param_tickers
+    # ローカルファイルからの読み込み
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except:
+            pass
+    return DEFAULT_TICKERS.copy()
 
-# --- 日本語の企業名取得（キャッシュ付き） ---
-@st.cache_data(ttl=86400)
+def save_watchlist(tickers):
+    st.session_state.watchlist = tickers
+    # ファイル保存
+    try:
+        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(tickers, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+    # URLパラメータ保存（ブックマーク・再読込時に復元可能）
+    st.query_params["tickers"] = ",".join(tickers)
+
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = load_watchlist()
+
+# --- 日本語企業名の取得（安定版） ---
+@st.cache_data(ttl=86400 * 7)
 def get_company_name_jp(code):
     try:
         url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        html = urllib.request.urlopen(req, timeout=3).read().decode('utf-8')
-        match = re.search(r'<title>(.*?)【', html)
-        if match:
-            return match.group(1).strip()
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=4) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            match = re.search(r'<title>\s*(.*?)\s*【', html)
+            if match and match.group(1):
+                return match.group(1).strip()
     except:
         pass
+    
+    # フォールバック（yfinanceの社名）
+    try:
+        t = yf.Ticker(f"{code}.T")
+        name = t.info.get("shortName") or t.info.get("longName")
+        if name:
+            return name
+    except:
+        pass
+        
     return code
 
 # --- 8つのものさし詳細診断（ポップアップモーダル） ---
@@ -65,7 +112,7 @@ def show_detail_dialog(code, name):
             elif op_margin >= 5: op_score = 65
             else: op_score = 30
 
-            # 3. 純利益推移（EPSの株式分割ノイズを排除）
+            # 3. 純利益推移
             eps_score = 50
             eps_desc = "データ不足"
             if not income.empty and "Net Income" in income.index:
@@ -75,7 +122,7 @@ def show_detail_dialog(code, name):
                     elif (ni > 0).all(): eps_score, eps_desc = 75, "○ 安定黒字維持"
                     else: eps_score, eps_desc = 35, "✕ 利益減少または赤字"
 
-            # 4. 純利益安定性（赤字履歴）
+            # 4. 純利益安定性
             profit_score = 50
             profit_desc = "データ不足"
             if not income.empty and "Net Income" in income.index:
@@ -151,7 +198,7 @@ def show_detail_dialog(code, name):
         except Exception as e:
             st.error(f"詳細データ取得エラー: {e}")
 
-# --- 高速バッチデータ取得キャッシュ ---
+# --- 高速バッチデータ取得 ---
 @st.cache_data(ttl=180)
 def fetch_watchlist_data(tickers):
     if not tickers:
@@ -182,7 +229,6 @@ def fetch_watchlist_data(tickers):
             raw_yield = info.get("dividendYield", 0) or 0
             div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
             
-            # 日本語企業名を取得
             jp_name = get_company_name_jp(code)
 
             rows.append({
@@ -203,19 +249,16 @@ def fetch_watchlist_data(tickers):
             
     return pd.DataFrame(rows)
 
-# --- スタイル関数（日本株カラー: プラス赤、マイナス青） ---
+# --- スタイル関数（日本株カラー） ---
 def color_diff_cells(val):
-    if pd.isna(val):
-        return ''
-    if val > 0:
-        return 'color: #ff4d4f; font-weight: 700;'  # プラス＝赤
-    elif val < 0:
-        return 'color: #1890ff; font-weight: 700;'  # マイナス＝青
+    if pd.isna(val): return ''
+    if val > 0: return 'color: #ff4d4f; font-weight: 700;'
+    elif val < 0: return 'color: #1890ff; font-weight: 700;'
     return 'color: #8c8c8c;'
 
 # --- メイン画面 ---
 st.title("📈 高配当株 監視ダッシュボード")
-st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** （ページ制限なし・一括表示）")
+st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** （自動保存・一括表示）")
 
 # 銘柄管理エリア
 with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
@@ -231,9 +274,11 @@ with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
             if st.button("追加する", type="primary", use_container_width=True):
                 if new_code:
                     codes = [c.strip() for c in new_code.split(",") if c.strip()]
+                    current = list(st.session_state.watchlist)
                     for c in codes:
-                        if c not in st.session_state.watchlist:
-                            st.session_state.watchlist.append(c)
+                        if c not in current:
+                            current.append(c)
+                    save_watchlist(current)
                     st.cache_data.clear()
                     st.rerun()
 
@@ -246,7 +291,8 @@ with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
         )
         if st.button("選択した銘柄を一括削除", type="secondary", use_container_width=True):
             if delete_targets:
-                st.session_state.watchlist = [c for c in st.session_state.watchlist if c not in delete_targets]
+                current = [c for c in st.session_state.watchlist if c not in delete_targets]
+                save_watchlist(current)
                 st.cache_data.clear()
                 st.rerun()
 
@@ -258,7 +304,6 @@ if not df_result.empty:
     st.write("---")
     st.subheader("📋 監視銘柄一覧")
     
-    # 日本株カラー ＆ 数値フォーマットを適用したPandas Styler
     styled_df = df_result.style.map(
         color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
     ).format({
