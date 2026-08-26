@@ -13,23 +13,24 @@ st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュ�
 
 WATCHLIST_FILE = "watchlist.json"
 
-# 初期銘柄リスト
 DEFAULT_TICKERS = [
     "8058", "3355", "9433", "2428", "4767", "4845", "2181", "1840", "7203", "2411",
     "2926", "8729", "6093", "9432", "3010", "2183", "4714", "7795", "2146", "9434",
     "8410", "4503", "5032", "5253", "8306", "8316", "8001", "2914", "1928", "8593"
 ]
 
-# 代表的な監視銘柄の日本語マスター辞書（通信エラー時でも100%日本語表示）
+# --- 監視銘柄 内蔵マスター辞書（通信遮断時でも100%日本語表示） ---
 KNOWN_NAMES = {
-    "8058": "三菱商事", "3355": "クリヤマHD", "9433": "KDDI", "2428": "ウェルネット",
-    "4767": "TOW", "4845": "フュージョン", "2181": "パーソルHD", "1840": "土屋HD",
-    "7203": "トヨタ自動車", "2411": "ゲンダイAG", "2926": "篠崎屋", "8729": "ソニーFG",
-    "6093": "エスクローAJ", "9432": "NTT", "3010": "ポラリスHD", "2183": "リニカル",
-    "4714": "リソー教育", "7795": "協立電機", "2146": "UTグループ", "9434": "ソフトバンク",
-    "8410": "セブン銀行", "4503": "アステラス製薬", "5032": "ANYCOLOR", "5253": "カバー",
-    "8306": "三菱UFJ FG", "8316": "三井住友FG", "8001": "伊藤忠商事", "2914": "日本たばこ産業",
-    "1928": "積水ハウス", "8593": "三菱HCキャピタル", "1414": "ショーボンドHD", "197A": "タウンズ"
+    "1414": "ショーボンドHD", "1822": "大豊建設", "1840": "土屋HD", "197A": "タウンズ",
+    "2146": "UTグループ", "2181": "パーソルHD", "2183": "リニカル", "2391": "プラネット",
+    "2411": "ゲンダイAG", "2428": "ウェルネット", "2461": "ファンコミ", "2499": "日本和装HD",
+    "2914": "JT", "2926": "篠崎屋", "3010": "ポラリスHD", "3355": "クリヤマHD",
+    "423A": "Chordia", "4503": "アステラス製薬", "4714": "リソー教育", "4767": "TOW",
+    "4845": "フュージョン", "5032": "ANYCOLOR", "5253": "カバー", "6093": "エスクローAJ",
+    "6625": "JALCO HD", "7203": "トヨタ自動車", "7354": "DMMX", "7367": "セルム",
+    "7795": "協立電機", "8001": "伊藤忠商事", "8058": "三菱商事", "8230": "はせがわ",
+    "8306": "三菱UFJ FG", "8316": "三井住友FG", "8410": "セブン銀行", "8593": "三菱HCキャピタル",
+    "8729": "ソニーFG", "9432": "NTT", "9433": "KDDI", "9434": "ソフトバンク", "1928": "積水ハウス"
 }
 
 # --- 銘柄リスト保存・復元 ---
@@ -60,24 +61,33 @@ def save_watchlist(tickers):
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
 
-# --- 東証全銘柄マスター（JPX公式）の一括読み込み ---
+# --- 東証全銘柄マスター（JPX公式）自動ロード ---
 @st.cache_data(ttl=86400 * 7)
 def get_jpx_master_dict():
     master = KNOWN_NAMES.copy()
     try:
         url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
             content = resp.read()
             df_jpx = pd.read_excel(io.BytesIO(content))
-            # JPXエクセルからコードと銘柄名を抽出
-            code_col = [c for c in df_jpx.columns if "コード" in str(c)][0]
-            name_col = [c for c in df_jpx.columns if "銘柄名" in str(c)][0]
+            
+            # 列の位置を安全に特定（コード列と銘柄名列）
+            code_col_idx = 1
+            name_col_idx = 2
+            for i, col in enumerate(df_jpx.columns):
+                c_str = str(col)
+                if "コード" in c_str: code_col_idx = i
+                elif "銘柄名" in c_str: name_col_idx = i
+
             for _, row in df_jpx.iterrows():
-                c_str = str(row[code_col]).strip().upper()
-                n_str = str(row[name_col]).strip()
-                if c_str and n_str and n_str != "nan":
-                    master[c_str] = n_str
+                try:
+                    c_val = str(row.iloc[code_col_idx]).split('.')[0].strip().upper()
+                    n_val = str(row.iloc[name_col_idx]).strip()
+                    if c_val and n_val and n_val not in ("nan", "None", ""):
+                        master[c_val] = n_val
+                except:
+                    continue
     except:
         pass
     return master
