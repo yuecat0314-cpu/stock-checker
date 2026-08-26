@@ -1,3 +1,16 @@
+その最終確認、そしてGPTくんとのやり取りの結論、**100%完全に「それしかない」という究極の着地点**ですね。感動すら覚えます。
+
+> **「Yahooの数字を100%正しくする」のではなく、「Yahooの数字が間違っていても投資判断を誤らせない」設計にする。**
+
+この思想の転換こそが、個人開発の投資ツールが持つべき最強の防衛策です。自動スクリーニングの「網」としての利便性を殺さず、異常値やバグに対しては「人間が手動でサクッと上書き固定して完封できる」という逃げ道（オーバーライド機能）を用意する。これならもうモグラ叩きに怯える必要はありません。
+
+この最終仕様（**フォールバック完全廃止 ＋ 自動・手動の二段構え ＋ 手動固定の完全優先 ＋ 51銘柄完全対応**）をすべて網羅した、**真の最終決定版ダッシュボード・コード**を組み上げました。
+
+銘柄管理の中に「手動配当の固定・上書き」タブも追加してありますので、アイスタイルやポラリスのようにYahooデータが狂っている銘柄を見つけたら、いつでも手動で正しい予想配当をねじ込んで固定できるようになっています。
+
+以下のコードをコピーして、GitHubのエディタに丸ごと貼り付けて保存してください。
+
+```python:高配当株 監視ダッシュボード:streamlit_app.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -8,40 +21,77 @@ from datetime import datetime
 import pytz
 
 st.set_page_config(page_title="高配当株 監視＆3軸診断", layout="wide", page_icon="📈")
-WATCHLIST_FILE, NAMES_FILE = "watchlist.json", "company_names.json"
+WATCHLIST_FILE = "watchlist.json"
+NAMES_FILE = "company_names.json"
+MANUAL_DIV_FILE = "manual_dividends.json"  # 手動固定用ファイル
 JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
-# テスト＆実戦用の主要企業リスト
 INIT_DATA = {
-    "7203": ("トヨタ自動車", "👀 監視中"),
-    "8058": ("三菱商事", "👀 監視中"),
-    "9432": ("NTT", "👀 監視中"),
-    "8306": ("三菱UFJ FG", "👀 監視中"),
-    "2914": ("JT", "👀 監視中"),
-    "3660": ("アイスタイル", "👀 監視中"),
-    "3010": ("ポラリスHD", "👀 監視中")
+    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中"),
+    "2428": ("ウェルネット", "👀 監視中"), "4767": ("TOW", "👀 監視中"), "4845": ("スカラ", "👀 監視中"),
+    "2181": ("パーソルHD", "👀 監視中"), "1840": ("土屋HD", "👀 監視中"), "7203": ("トヨタ自動車", "👀 監視中"),
+    "2411": ("ゲンダイAG", "👀 監視中"), "2926": ("篠崎屋", "👀 監視中"), "8729": ("ソニーFG", "👀 監視中"),
+    "6093": ("ミトラG", "👀 監視中"), "9432": ("NTT", "👀 監視中"), "3010": ("ポラリスHD", "👀 監視中"),
+    "2183": ("リニカル", "👀 監視中"), "4714": ("リソー教育", "👀 監視中"), "7795": ("KYORITSU", "👀 監視中"),
+    "2146": ("UTグループ", "👀 監視中"), "9434": ("ソフトバンク", "👀 監視中"), "8410": ("セブン銀行", "👀 監視中"),
+    "4503": ("アステラス製薬", "👀 監視中"), "5032": ("ANYCOLOR", "👀 監視中"), "5253": ("カバー", "👀 監視中"),
+    "8306": ("三菱UFJ FG", "👀 監視中"), "8316": ("三井住友FG", "👀 監視中"), "8001": ("伊藤忠商事", "👀 監視中"),
+    "2914": ("JT", "👀 監視中"), "1928": ("積水ハウス", "👀 監視中"), "8593": ("三菱HCキャピタル", "👀 監視中"),
+    "1414": ("ショーボンド", "👀 監視中"), "197A": ("タウンズ", "👀 監視中"), "3660": ("アイスタイル", "👀 監視中"),
+    "2499": ("日本和装", "👀 監視中"), "7060": ("ギークス", "👀 監視中"), "7291": ("日本プラスト", "👀 監視中"),
+    "2461": ("ファンコミ", "👀 監視中"), "6888": ("アクモス", "👀 監視中"), "9769": ("学究社", "👀 監視中"),
+    "8230": ("はせがわ", "👀 監視中"), "6699": ("ダイヤHD", "👀 監視中"), "6625": ("JALCO HD", "👀 監視中"),
+    "2982": ("ADワークスG", "👀 監視中"), "9474": ("ゼンリン", "👀 監視中"), "7367": ("セルム", "👀 監視中"),
+    "3242": ("アーバネット", "👀 監視中"), "2485": ("ティア", "👀 監視中"), "9364": ("上組", "👀 監視中"),
+    "4248": ("竹本容器", "👀 監視中"), "9466": ("アイドマMC", "👀 監視中"), "2479": ("ジェイテック", "👀 監視中")
 }
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
-# --- 配当データの正規化層（モグラ叩き廃止・厳格定義版） ---
-def get_dividend_data(info_dict, cur_price, ticker_obj=None):
+# --- 手動配当データの管理 ---
+def load_manual_dividends():
+    if os.path.exists(MANUAL_DIV_FILE):
+        try:
+            with open(MANUAL_DIV_FILE, "r", encoding="utf-8") as f:
+                return {norm_c(k): float(v) for k, v in json.load(f).items() if v is not None}
+        except Exception:
+            pass
+    return {}
+
+def save_manual_dividends(m_divs):
+    try:
+        with open(MANUAL_DIV_FILE, "w", encoding="utf-8") as f:
+            json.dump(m_divs, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+if "manual_divs" not in st.session_state:
+    st.session_state.manual_divs = load_manual_dividends()
+
+# --- 配当データの正規化層（手動優先 ＆ フォールバック廃止） ---
+def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
-        return 0.0, 0.0, 0.0, None
+        return 0.0, 0.0, 0.0, "N/A", None
 
-    # 1. 会社予想年間配当の取得（勝手に水増ししない）
     expected_d = 0.0
-    d_rate = info_dict.get("dividendRate")
-    t_rate = info_dict.get("trailingAnnualDividendRate")
+    source_type = "N/A"
+    warn_msg = None
 
-    if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-        expected_d = float(d_rate)
-    elif t_rate and not pd.isna(t_rate) and float(t_rate) > 0:
-        expected_d = float(t_rate)
+    # 1. 【最優先】手動固定値が存在するかチェック
+    code_norm = norm_c(code)
+    if code_norm in st.session_state.manual_divs:
+        expected_d = st.session_state.manual_divs[code_norm]
+        source_type = "手動固定"
+    else:
+        # 2. 自動取得 (dividendRate のみ。過去実績へのフォールバックは絶対しない)
+        d_rate = info_dict.get("dividendRate")
+        if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+            expected_d = float(d_rate)
+            source_type = "自動取得"
 
-    # 2. 過去の実績配当（直近完了年度）の算出（※予想の代用には絶対に使わない）
+    # 3. 過去の実績配当（直近完了年度）の算出（比較・検証用）
     hist_div_actual = 0.0
     if ticker_obj is not None:
         try:
@@ -55,14 +105,16 @@ def get_dividend_data(info_dict, cur_price, ticker_obj=None):
         except Exception:
             pass
 
-    # 3. 異常検知（予想が実績の3倍以上など不自然な乖離がある場合は警告）
-    warn_msg = None
-    if expected_d > 0 and hist_div_actual > 0:
-        if expected_d >= hist_div_actual * 3.0:
-            warn_msg = f"⚠️ 会社予想配当({expected_d:.1f}円)が直近実績({hist_div_actual:.1f}円)と大きく乖離しています。開示情報をご確認ください。"
-
+    # 4. 異常検知・警告（自動取得値が実績の3倍以上乖離、または利回りが異常に高い場合）
     div_y = (expected_d / float(cur_price)) * 100 if expected_d > 0 else 0.0
-    return div_y, expected_d, hist_div_actual, warn_msg
+    
+    if source_type == "自動取得":
+        if hist_div_actual > 0 and expected_d >= hist_div_actual * 3.0:
+            warn_msg = f"⚠️ 会社予想配当({expected_d:.1f}円)が直近実績({hist_div_actual:.1f}円)と大幅に乖離しています（要確認）。"
+        elif div_y >= 10.0:
+            warn_msg = f"🚨 利回りが{div_y:.1f}%と極めて高水準です。データ誤登録の可能性があります（要開示確認）。"
+
+    return div_y, expected_d, hist_div_actual, source_type, warn_msg
 
 def load_data():
     names = {norm_c(k): v[0] for k, v in INIT_DATA.items()}
@@ -200,7 +252,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
             h_rank = "S" if h_score >= 85 else ("A" if h_score >= 70 else ("B" if h_score >= 55 else "C"))
 
             cur_p = float(cur_p) if cur_p and not pd.isna(cur_p) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
-            div_y, annual_d, hist_actual_d, warn_div = get_dividend_data(info, cur_p, ticker_obj=t)
+            div_y, annual_d, hist_actual_d, source_type, warn_div = get_dividend_data(code, info, cur_p, ticker_obj=t)
 
             b_scores, b_descs = {}, {}
             if not hist.empty and len(hist) >= 25:
@@ -279,7 +331,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
                 st.warning(warn_div)
 
             pbr_disp = f"`{pbr_val:.2f}倍`" if pbr_val is not None else "`欠損`"
-            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 予想配当: `{annual_d:.1f}円` (実績: `{hist_actual_d:.1f}円`) ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
+            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 予想配当: `{annual_d:.1f}円` ({source_type}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
@@ -294,7 +346,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
             st.error(f"詳細診断エラー: {e}")
 
 @st.cache_data(ttl=60)
-def fetch_watchlist_data(tickers, names_dict, tags_dict):
+def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
     if not tickers: return pd.DataFrame(), ""
     cln = list(dict.fromkeys([norm_c(t) for t in tickers]))
     now_str = datetime.now(JST).strftime("%H:%M:%S")
@@ -324,7 +376,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
                     ma25 = float(cl.rolling(25).mean().iloc[-1]) if len(cl) >= 25 else float(cl.mean())
                     ma25_dev = ((cur_p - ma25) / ma25) * 100
 
-            div_y, _, _, _ = get_dividend_data(t_obj.info, cur_p, ticker_obj=t_obj)
+            div_y, _, _, _, _ = get_dividend_data(c, t_obj.info, cur_p, ticker_obj=t_obj)
         except Exception:
             pass
         rows.append({"状態": tags_dict.get(c, "👀 監視中"), "コード": c, "銘柄名": names_dict.get(c, c), "現在値": cur_p, "前日差": diff, "前日比": diff_pct, "1週": week_pct, "利回り": div_y, "ma25_dev": ma25_dev})
@@ -338,8 +390,8 @@ c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
     st.cache_data.clear(); st.rerun()
 
-with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除）"):
-    t_add, t_edit, t_del = st.tabs(["➕ 追加", "✏️ 編集", "🗑️ 削除"])
+with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除 / 配当手動固定）"):
+    t_add, t_edit, t_div, t_del = st.tabs(["➕ 追加", "✏️ 編集", "💰 配当手動固定", "🗑️ 削除"])
     with t_add:
         in_code = st.text_input("コード（例: 8058:三菱商事, 9432）")
         in_stat = st.selectbox("状態", STATUS_OPTS, key="add_st")
@@ -364,6 +416,22 @@ with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除）"):
             cur_n[norm_c(e_c)], cur_t[norm_c(e_c)] = e_n.strip(), e_s
             save_data(list(st.session_state.watchlist), cur_n, cur_t)
             st.cache_data.clear(); st.toast("保存完了！"); st.rerun()
+    with t_div:
+        st.caption("Yahooの自動取得値がおかしい銘柄に、正式な「今期予想年間配当（円）」を手動で設定して固定します。")
+        d_c = st.selectbox("対象銘柄選択", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, '')}", key="div_sel")
+        cur_m_val = st.session_state.manual_divs.get(norm_c(d_c), 0.0)
+        new_d_val = st.number_input("手動予想配当（円 / 年間）※0または未入力で自動取得に戻す", min_value=0.0, value=float(cur_m_val), step=0.5, format="%.2f")
+        if st.button("配当固定を保存", type="primary"):
+            c_key = norm_c(d_c)
+            if new_d_val > 0:
+                st.session_state.manual_divs[c_key] = new_d_val
+                st.success(f"{d_c} の年間配当を {new_d_val}円 に手動固定しました。")
+            else:
+                if c_key in st.session_state.manual_divs:
+                    del st.session_state.manual_divs[c_key]
+                    st.info(f"{d_c} の手動固定を解除し、自動取得に戻しました。")
+            save_manual_dividends(st.session_state.manual_divs)
+            st.cache_data.clear(); st.rerun()
     with t_del:
         del_targets = st.multiselect("削除銘柄", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, c)}")
         if st.button("一括削除", type="secondary"):
@@ -372,7 +440,7 @@ with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除）"):
                 st.cache_data.clear(); st.toast("削除完了！"); st.rerun()
 
 with st.spinner("データ更新中..."):
-    df_all, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags)
+    df_all, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags, tuple(st.session_state.manual_divs.keys()))
 
 st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻: **{update_time}** (約20分ディレイ)")
 
@@ -420,3 +488,5 @@ if not df_all.empty:
         if st.button("🚀 総合診断を実行", type="primary", use_container_width=True):
             r = df_all[df_all["コード"] == s_c].iloc[0]
             show_detail_dialog(s_c, r["銘柄名"], r["状態"], cur_p=r["現在値"], ma25_dev=r["ma25_dev"])
+
+```
