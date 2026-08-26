@@ -434,36 +434,38 @@ st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻:
 if not df_all.empty:
     valid_df = df_all.dropna(subset=["現在値"])
     
-    st.subheader("🚨 注目シグナル ＆ 参考高利回り")
-    
-    has_signal = False
-    
-    # 1. 押し目候補（最大3件・縦の箇条書き）
-    dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
-    for _, r in dip_df.head(3).iterrows():
-        has_signal = True
-        st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
-    
-    # 2. 過熱中（最大3件・1行にまとめてだらーっと）
-    heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
-    heat_items = []
-    for _, r in heat_df.head(3).iterrows():
-        heat_items.append(f"{r['銘柄名']} ({r['コード']}): 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
-    if heat_items:
-        has_signal = True
-        st.markdown(f"- 🔴 **【過熱中】** " + " ｜ ".join(heat_items))
-    
-    # 3. 高利回り（最大3件・1行にまとめてだらーっと）
-    high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
-    hy_items = []
-    for _, r in high_yield_df.head(3).iterrows():
-        hy_items.append(f"{r['銘柄名']} ({r['コード']}): `{r['利回り']:.2f}%`")
-    if hy_items:
-        has_signal = True
-        st.markdown(f"- 💰 **【高利回り】** " + " ｜ ".join(hy_items))
+    # スマホでも見やすく収まるように枠線付きコンテナ（カード風）に収納
+    with st.container(border=True):
+        st.markdown("##### 🚨 本日の注目シグナル ＆ 参考高利回り")
+        
+        has_signal = False
+        
+        # 1. 押し目候補（最大3件・縦の箇条書き）
+        dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
+        for _, r in dip_df.head(3).iterrows():
+            has_signal = True
+            st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
+        
+        # 2. 過熱中（最大3件・1行まとめ）
+        heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
+        heat_items = []
+        for _, r in heat_df.head(3).iterrows():
+            heat_items.append(f"**{r['銘柄名']} ({r['コード']})**: 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
+        if heat_items:
+            has_signal = True
+            st.markdown(f"- 🔴 **【過熱中】** " + " ｜ ".join(heat_items))
+        
+        # 3. 高利回り（最大3件・1行まとめ）
+        high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
+        hy_items = []
+        for _, r in high_yield_df.head(3).iterrows():
+            hy_items.append(f"**{r['銘柄名']} ({r['コード']})**: `{r['利回り']:.2f}%`")
+        if hy_items:
+            has_signal = True
+            st.markdown(f"- 💰 **【高利回り】** " + " ｜ ".join(hy_items))
 
-    if not has_signal:
-        st.success("✅ 現在、該当するシグナルはありません。")
+        if not has_signal:
+            st.success("✅ 現在、該当するシグナルはありません。")
         
     st.divider()
 
