@@ -20,7 +20,6 @@ INIT_DATA = {}
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
-# Yahooファイナンス日本版から日本語の会社名を自動取得する関数
 def fetch_jp_company_name(code):
     try:
         url = f"https://finance.yahoo.co.jp/quote/{code}.T"
@@ -413,11 +412,9 @@ with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除 / 配当手動�
                     if not it.strip(): continue
                     parts = it.split(":", 1) if ":" in it else (it.split("：", 1) if "：" in it else (it, ""))
                     c = norm_c(parts[0])
-                    
-                    # ユーザーが明示的に名前を指定していればそれを使う。指定がない場合は「Yahooファイナンス日本版から自動で日本語名を取得」する！
                     n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
                     if not n_input:
-                        n_input = fetch_jp_company_name(c) # 自動日本語取得！
+                        n_input = fetch_jp_company_name(c)
 
                     cur_n[c] = n_input
                     cur_t[c] = "監視"
@@ -482,7 +479,6 @@ df_prices = st.session_state.cached_price_df
 rows = []
 for c in st.session_state.watchlist:
     tag = st.session_state.company_tags.get(c, "監視")
-    # 既存の日本語名を絶対保持し、未登録の場合のみYahooファイナンス日本版から日本語名を取得して保存する
     name = st.session_state.company_names.get(c) or st.session_state.company_names.get(norm_c(c))
     if not name or name == c or name.isdigit():
         name = fetch_jp_company_name(c)
@@ -519,7 +515,8 @@ if not df_all.empty:
         dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
         for _, r in dip_df.head(3).iterrows():
             has_signal = True
-            yld_str = f"{r['利回り']:.2f}%" if pd.notna(r['利回り']) and r['利回り'] > 0 else "-"
+            yld_val = r['利回り']
+            yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
             st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`")
         
         heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
@@ -533,7 +530,8 @@ if not df_all.empty:
         high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
         hy_items = []
         for _, r in high_yield_df.head(3).iterrows():
-            yld_str = f"{r['利回り']:.2f}%" if pd.notna(r['利回り']) and r['利回り'] > 0 else "-"
+            yld_val = r['利回り']
+            yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
             hy_items.append(f"**{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
         if hy_items:
             has_signal = True
@@ -547,10 +545,16 @@ if not df_all.empty:
     # 4タブ構成
     tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
-    # マイルドなアップダウンカラー適用のためのスタイラー関数
+    # 利回りが消えないよう、データを安全な文字列に変換して表示するテーブル関数
     def style_dataframe(df_target):
         disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
         
+        # 利回りを確実に「〇.〇%」または「-」の文字列に変換して、StylerやDataFrameの表示不具合を回避
+        disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
+        # 元の利回り列を置き換え
+        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示"]]
+        disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
+
         def color_cells(v):
             if pd.isna(v):
                 return ''
@@ -567,8 +571,7 @@ if not df_all.empty:
             '現在値': '{:,.1f} 円',
             '前日比': '{:+.2f}%',
             '1週': '{:+.2f}%',
-            '25日乖離': '{:+.1f}%',
-            '利回り': lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-"
+            '25日乖離': '{:+.1f}%'
         }, na_rep='-')
         
         st.dataframe(
