@@ -17,20 +17,6 @@ STATUS_OPTS = ["監視", "保有", "趣味"]
 
 INIT_DATA = {}
 
-# スマホでも表が縦に崩れず、横スライド（スクロール）できるようにするCSS
-st.markdown("""
-<style>
-.scroll-table-wrapper {
-    width: 100%;
-    overflow-x: auto;
-    padding-bottom: 8px;
-}
-.scroll-table-inner {
-    min-width: 750px; /* スマホでも横並びが潰れない最低幅 */
-}
-</style>
-""", unsafe_allow_html=True)
-
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
@@ -342,7 +328,6 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
         except Exception as e:
             st.error(f"詳細診断エラー: {e}")
 
-# セッションに株価データを保持して、タブ移動時の再取得（遅延）を完全に防止する爆速化キャッシュ
 @st.cache_data(ttl=300)
 def fetch_watchlist_data_cached(tickers_tuple):
     if not tickers_tuple: return pd.DataFrame()
@@ -493,134 +478,89 @@ if not df_all.empty:
         
     st.divider()
 
+    # --- ⚡ 爆速クイック操作パネル（検索して一撃アクション） ---
+    with st.container(border=True):
+        st.markdown("##### ⚡ クイック操作パネル（銘柄を選んで一撃アクション）")
+        if st.session_state.watchlist:
+            qc1, qc2, qc3, qc4 = st.columns([2, 1, 1, 1])
+            sel_c = qc1.selectbox(
+                "銘柄選択",
+                st.session_state.watchlist,
+                format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, c)} [{st.session_state.company_tags.get(c, '監視')}]",
+                key="quick_sel_stock",
+                label_visibility="collapsed"
+            )
+            if sel_c:
+                s_name = st.session_state.company_names.get(sel_c, sel_c)
+                s_tag = st.session_state.company_tags.get(sel_c, "監視")
+                r_match = df_all[df_all["コード"] == sel_c]
+                cur_p = r_match.iloc[0]["現在値"] if not r_match.empty else None
+                ma_dev = r_match.iloc[0]["25日乖離"] if not r_match.empty else None
+
+                if qc2.button("🔍 診断", use_container_width=True):
+                    show_detail_dialog(sel_c, s_name, s_tag, cur_p=cur_p, ma25_dev=ma_dev)
+
+                next_t = qc3.selectbox(
+                    "移動先",
+                    STATUS_OPTS,
+                    index=STATUS_OPTS.index(s_tag) if s_tag in STATUS_OPTS else 0,
+                    key="quick_target_tag",
+                    label_visibility="collapsed"
+                )
+                if next_t != s_tag:
+                    cur_t = dict(st.session_state.company_tags)
+                    cur_t[sel_c] = next_t
+                    save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
+                    st.toast(f"{s_name} を「{next_t}」に移動しました！")
+                    st.rerun()
+
+                if qc4.button("🗑️ 削除", use_container_width=True, type="secondary"):
+                    new_w = [w for w in st.session_state.watchlist if w != sel_c]
+                    cur_n = dict(st.session_state.company_names)
+                    cur_t = dict(st.session_state.company_tags)
+                    cur_n.pop(sel_c, None)
+                    cur_t.pop(sel_c, None)
+                    save_data(new_w, cur_n, cur_t)
+                    st.toast(f"{s_name} を削除しました。")
+                    st.rerun()
+
+    st.divider()
+
     # 4タブ構成
     tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
-    def render_action_list(target_df, tab_key_prefix):
+    def render_clean_dataframe(target_df):
         if target_df.empty:
             st.info("該当する銘柄はありません。")
             return
 
-        # 並び替え（ソート）用プルダウン
-        sort_opt = st.selectbox(
-            "並び替え", 
-            [
-                "🔢 コード順 (昇順)", 
-                "🔢 コード順 (降順)", 
-                "💰 利回りが高い順", 
-                "💰 利回りが低い順", 
-                "📉 25日乖離が小さい順 (押し目)", 
-                "📈 25日乖離が大きい順 (過熱)", 
-                "🔻 前日比の下落が大きい順", 
-                "🔥 1週間の上昇が大きい順"
-            ], 
-            key=f"sort_{tab_key_prefix}"
+        # 表示用のクリーンなDataFrameを作成
+        disp_df = target_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
+        
+        st.dataframe(
+            disp_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "状態": st.column_config.TextColumn("所属", width="small"),
+                "コード": st.column_config.TextColumn("コード", width="small"),
+                "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
+                "現在値": st.column_config.NumberColumn("現在値", format="%.1f 円"),
+                "前日比": st.column_config.NumberColumn("前日比", format="%+.2f %%"),
+                "1週": st.column_config.NumberColumn("1週騰落", format="%+.2f %%"),
+                "25日乖離": st.column_config.NumberColumn("25日乖離", format="%+.1f %%"),
+                "利回り": st.column_config.NumberColumn("利回り", format="%.2f %%"),
+            }
         )
 
-        d_sorted = target_df.copy()
-        if "コード順 (昇順)" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="コード", ascending=True)
-        elif "コード順 (降順)" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="コード", ascending=False)
-        elif "利回りが高い順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="利回り", ascending=False, na_position="last")
-        elif "利回りが低い順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="利回り", ascending=True, na_position="last")
-        elif "25日乖離が小さい順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="25日乖離", ascending=True, na_position="last")
-        elif "25日乖離が大きい順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="25日乖離", ascending=False, na_position="last")
-        elif "前日比の下落が大きい順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="前日比", ascending=True, na_position="last")
-        elif "1週間の上昇が大きい順" in sort_opt:
-            d_sorted = d_sorted.sort_values(by="1週", ascending=False, na_position="last")
-
-        # 横スクロール可能なラッパーで包み、スマホでも縦崩れさせずにスワイプ可能に
-        st.markdown('<div class="scroll-table-wrapper"><div class="scroll-table-inner">', unsafe_allow_html=True)
-
-        # ヘッダー行
-        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
-        h1.markdown("**コード**")
-        h2.markdown("**銘柄名**")
-        h3.markdown("**現在値**")
-        h4.markdown("**前日比**")
-        h5.markdown("**1週**")
-        h6.markdown("**25日乖離**")
-        h7.markdown("**利回り**")
-        h8.markdown("**操作 (診断 / 移動 / 削除)**")
-        st.markdown("---")
-
-        for _, row in d_sorted.iterrows():
-            code = row["コード"]
-            name = row["銘柄名"]
-            cur_p = row["現在値"]
-            diff_p = row["前日比"]
-            w_p = row["1週"]
-            dev25 = row["25日乖離"]
-            yld = row["利回り"]
-            current_tag = st.session_state.company_tags.get(code, "監視")
-
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.8, 1.4, 1.0, 1.0, 1.0, 1.0, 0.9, 2.4])
-            
-            c1.text(code)
-            c2.text(name)
-            c3.text(f"{cur_p:,.1f}円" if pd.notna(cur_p) else "-")
-            
-            c4.markdown(f"<span style='color: {'#ff4d4f' if diff_p > 0 else ('#1890ff' if diff_p < 0 else '#8c8c8c')}; font-weight:700;'>{diff_p:+.2f}%</span>" if pd.notna(diff_p) else "-", unsafe_allow_html=True)
-            c5.markdown(f"<span style='color: {'#ff4d4f' if w_p > 0 else ('#1890ff' if w_p < 0 else '#8c8c8c')}; font-weight:700;'>{w_p:+.2f}%</span>" if pd.notna(w_p) else "-", unsafe_allow_html=True)
-            c6.markdown(f"<span style='color: {'#ff4d4f' if dev25 > 0 else ('#1890ff' if dev25 < 0 else '#8c8c8c')}; font-weight:700;'>{dev25:+.1f}%</span>" if pd.notna(dev25) else "-", unsafe_allow_html=True)
-            c7.text(f"{yld:.2f}%" if pd.notna(yld) and yld > 0 else "-")
-
-            b_diag, b_sel, b_del = c8.columns([1.0, 1.6, 0.9])
-            
-            if b_diag.button("🔍 診断", key=f"diag_{tab_key_prefix}_{code}"):
-                show_detail_dialog(code, name, current_tag, cur_p=cur_p, ma25_dev=dev25)
-            
-            new_tag = b_sel.selectbox(
-                "移動", 
-                STATUS_OPTS, 
-                index=STATUS_OPTS.index(current_tag) if current_tag in STATUS_OPTS else 0,
-                key=f"tag_sel_{tab_key_prefix}_{code}",
-                label_visibility="collapsed"
-            )
-            if new_tag != current_tag:
-                cur_t = dict(st.session_state.company_tags)
-                cur_t[code] = new_tag
-                save_data(list(st.session_state.watchlist), dict(st.session_state.company_names), cur_t)
-                st.toast(f"{name} を「{new_tag}」に移動しました！")
-                st.rerun()
-
-            if b_del.button("🗑️ 削除", key=f"del_{tab_key_prefix}_{code}"):
-                new_w = [w for w in st.session_state.watchlist if w != code]
-                cur_n = dict(st.session_state.company_names)
-                cur_t = dict(st.session_state.company_tags)
-                cur_n.pop(code, None)
-                cur_t.pop(code, None)
-                save_data(new_w, cur_n, cur_t)
-                st.toast(f"{name} を削除しました。")
-                st.rerun()
-
-        st.markdown('</div></div>', unsafe_allow_html=True)
-
     with tab_all:
-        render_action_list(df_all, "all")
+        render_clean_dataframe(df_all)
         
     with tab_watch:
-        watch_df = df_all[df_all["状態"] == "監視"]
-        render_action_list(watch_df, "watch")
+        render_clean_dataframe(df_all[df_all["状態"] == "監視"])
         
     with tab_hold:
-        hold_df = df_all[df_all["状態"] == "保有"]
-        render_action_list(hold_df, "hold")
+        render_clean_dataframe(df_all[df_all["状態"] == "保有"])
         
     with tab_hobby:
-        hobby_df = df_all[df_all["状態"] == "趣味"]
-        render_action_list(hobby_df, "hobby")
-
-    st.divider()
-    st.subheader("🔍 銘柄個別クイック診断")
-    if not df_all.empty:
-        s_c = st.selectbox("診断する銘柄を選択", df_all["コード"].tolist(), format_func=lambda c: f"{c} - {df_all.loc[df_all['コード']==c, '銘柄名'].values[0]} ({st.session_state.company_tags.get(c, '監視')})")
-        if st.button("🚀 選択銘柄の総合診断を実行", type="primary", use_container_width=True):
-            r = df_all[df_all["コード"] == s_c].iloc[0]
-            show_detail_dialog(s_c, r["銘柄名"], st.session_state.company_tags.get(s_c, '監視'), cur_p=r["現在値"], ma25_dev=r["25日乖離"])
+        render_clean_dataframe(df_all[df_all["状態"] == "趣味"])
