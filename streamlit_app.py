@@ -1,172 +1,198 @@
-import datetime
-import random
-
-import altair as alt
-import numpy as np
-import pandas as pd
 import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
-)
+st.set_page_config(page_title="高配当株 健全性自動チェッカー", layout="wide", page_icon="📊")
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
+st.title("📊 高配当株 8つのものさし自動チェッカー")
+st.caption("銘柄コードを入力するだけで財務・配当データを自動取得し、減配リスクと企業体力を即座に判定します。")
 
-    # Set seed for reproducibility.
-    np.random.seed(42)
+col_in1, col_in2 = st.columns([1, 2])
+with col_in1:
+    ticker_input = st.text_input("銘柄コード（4桁）", value="9432", max_chars=5)
+with col_in2:
+    st.write("")
+    st.write("")
+    fetch_btn = st.button("📈 財務データを自動取得して診断", type="primary")
 
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
-    ]
+if ticker_input:
+    ticker_symbol = f"{ticker_input.strip()}.T" if not ticker_input.endswith(".T") else ticker_input.strip()
+    
+    with st.spinner(f"【{ticker_symbol}】の財務データ・配当履歴を取得中..."):
+        try:
+            ticker = yf.Ticker(ticker_symbol)
+            info = ticker.info
+            income = ticker.financials
+            balance = ticker.balance_sheet
+            dividends = ticker.dividends
 
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
+            company_name = info.get("longName", info.get("shortName", ticker_symbol))
+            st.success(f"取得完了: **{company_name}** ({ticker_symbol})")
 
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
+            # 1. 売上高成長
+            sales_growth_score = 50
+            sales_desc = "データ不足"
+            if not income.empty and "Total Revenue" in income.index:
+                rev = income.loc["Total Revenue"].dropna()[::-1]
+                if len(rev) >= 2:
+                    yoy_growth = ((rev.iloc[-1] / rev.iloc[0]) ** (1 / (len(rev)-1)) - 1) * 100
+                    if yoy_growth >= 4:
+                        sales_growth_score = 100
+                        sales_desc = f"◎ 年平均+{yoy_growth:.1f}%で成長"
+                    elif yoy_growth > 0:
+                        sales_growth_score = 80
+                        sales_desc = f"○ 緩やかに成長 (+{yoy_growth:.1f}%)"
+                    else:
+                        sales_growth_score = 30
+                        sales_desc = f"✕ 縮小傾向 ({yoy_growth:.1f}%)"
 
+            # 2. 営業利益率
+            op_margin = info.get("operatingMargins", 0) * 100
+            if op_margin >= 15: op_score = 100
+            elif op_margin >= 10: op_score = 85
+            elif op_margin >= 5: op_score = 65
+            else: op_score = 30
 
-# Show a section to add a new ticket.
-st.header("Add a ticket")
+            # 3. EPS成長
+            eps_score = 50
+            eps_desc = "データ不足"
+            if not income.empty and "Diluted EPS" in income.index:
+                eps_series = income.loc["Diluted EPS"].dropna()[::-1]
+                if len(eps_series) >= 2:
+                    if eps_series.iloc[-1] > eps_series.iloc[0] and (eps_series >= 0).all():
+                        eps_score = 100
+                        eps_desc = "◎ 右肩上がりに成長"
+                    elif eps_series.iloc[-1] >= eps_series.iloc[0]:
+                        eps_score = 75
+                        eps_desc = "○ 安定水準を維持"
+                    else:
+                        eps_score = 35
+                        eps_desc = "✕ 減少または乱高下"
 
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
+            # 4. 純利益安定性
+            profit_score = 50
+            profit_desc = "データ不足"
+            if not income.empty and "Net Income" in income.index:
+                net_incomes = income.loc["Net Income"].dropna()
+                if (net_incomes > 0).all():
+                    profit_score = 100
+                    profit_desc = "◎ 連続黒字を維持"
+                else:
+                    profit_score = 25
+                    profit_desc = "✕ 直近で赤字年度あり"
 
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
+            # 5. 非減配年数
+            div_years_count = 0
+            div_score = 40
+            if not dividends.empty:
+                annual_div = dividends.resample('YE').sum().dropna()
+                annual_div = annual_div[annual_div > 0]
+                if len(annual_div) >= 2:
+                    diffs = annual_div.diff().dropna()
+                    non_cut_years = 0
+                    for val in reversed(diffs.values):
+                        if val >= -0.01: non_cut_years += 1
+                        else: break
+                    div_years_count = non_cut_years + 1
+                    if div_years_count >= 10: div_score = 100
+                    elif div_years_count >= 5: div_score = 80
+                    elif div_years_count >= 3: div_score = 60
+                    else: div_score = 30
+            div_desc = f"{div_years_count} 年以上非減配"
 
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
+            # 6. 配当性向
+            payout_ratio = info.get("payoutRatio", 0) * 100
+            if 30 <= payout_ratio <= 50: payout_score = 100
+            elif (50 < payout_ratio <= 65) or (20 <= payout_ratio < 30): payout_score = 80
+            elif 65 < payout_ratio <= 80: payout_score = 55
+            elif payout_ratio > 80: payout_score = 25
+            else: payout_score = 60
 
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
+            # 7. 自己資本比率
+            equity_ratio = 0
+            eq_score = 50
+            if not balance.empty and "Stockholders Equity" in balance.index and "Total Assets" in balance.index:
+                total_equity = balance.loc["Stockholders Equity"].dropna().iloc[0]
+                total_assets = balance.loc["Total Assets"].dropna().iloc[0]
+                if total_assets > 0:
+                    equity_ratio = (total_equity / total_assets) * 100
+                    if equity_ratio >= 60: eq_score = 100
+                    elif equity_ratio >= 40: eq_score = 80
+                    elif equity_ratio >= 25: eq_score = 55
+                    else: eq_score = 25
 
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
-)
+            # 8. 利益剰余金
+            retained_score = 60
+            retained_desc = "安定"
+            if not balance.empty and "Retained Earnings" in balance.index:
+                re = balance.loc["Retained Earnings"].dropna()[::-1]
+                if len(re) >= 2:
+                    if re.iloc[-1] > re.iloc[0]:
+                        retained_score = 100
+                        retained_desc = "◎ 潤沢に積み増し中"
+                    else:
+                        retained_score = 40
+                        retained_desc = "△ 横ばいまたは取り崩し"
 
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
-edited_df = st.data_editor(
-    st.session_state.df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
-)
+            scores = [sales_growth_score, op_score, eps_score, profit_score, div_score, payout_score, eq_score, retained_score]
+            total_score = int(np.mean(scores))
 
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
+            if total_score >= 85:
+                rank = "S"
+                verdict_text = "【超優良】財務基盤・収益性・減配耐性ともに隙がありません。長期保有の主力に適しています。"
+            elif total_score >= 70:
+                rank = "A"
+                verdict_text = "【優良】全体的に高水準で安定しています。ポートフォリオの有力候補です。"
+            elif total_score >= 55:
+                rank = "B"
+                verdict_text = "【普通】標準的な体力です。景気敏感度や配当方針の変更に注意が必要です。"
+            else:
+                rank = "C"
+                verdict_text = "【注意】配当が高くても減配リスクや財務懸念（罠銘柄リスク）があります。"
 
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
+            st.divider()
+            c1, c2 = st.columns([1, 2])
 
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
-    )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
+            with c1:
+                st.subheader("診断スコア")
+                st.metric(label="総合健全性スコア", value=f"{total_score} / 100 点", delta=f"RANK {rank}")
+                st.info(verdict_text)
+                div_yield = info.get("dividendYield", 0) * 100 if info.get("dividendYield") else 0
+                st.markdown(f"""
+                - **予想配当利回り**: `{div_yield:.2f}%`
+                - **営業利益率**: `{op_margin:.1f}%`
+                - **配当性向**: `{payout_ratio:.1f}%`
+                - **自己資本比率**: `{equity_ratio:.1f}%`
+                """)
 
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+            with c2:
+                categories = ['売上成長', '営業利益率', 'EPS成長', '純利益安定', '非減配年数', '配当性向', '自己資本比率', '利益剰余金']
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(
+                    r=scores + [scores[0]],
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    fillcolor='rgba(56, 189, 248, 0.3)',
+                    line=dict(color='#0284c7', width=2),
+                    name='評価スコア'
+                ))
+                fig.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                    showlegend=False,
+                    height=350,
+                    margin=dict(l=40, r=40, t=30, b=30)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("📋 8つのものさし詳細内訳")
+            detail_df = pd.DataFrame({
+                "指標項目": categories,
+                "評価スコア": scores,
+                "判定状況": [sales_desc, f"{op_margin:.1f}%", eps_desc, profit_desc, div_desc, f"{payout_ratio:.1f}%", f"{equity_ratio:.1f}%", retained_desc]
+            })
+            st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"データ取得エラー: 銘柄コードが存在しないか、取得制限の可能性があります。({e})")
