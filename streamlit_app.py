@@ -391,7 +391,6 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
                     
                     if not n_input:
-                        # 名前が未入力の場合はyfinanceから正式名称を取得を試みる
                         try:
                             t_info = yf.Ticker(f"{c}.T").info
                             n_input = t_info.get("longName") or t_info.get("shortName") or c
@@ -490,51 +489,71 @@ if not df_all.empty:
     # 4タブ構成
     tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
-    # 1. 「すべて」タブ（閲覧専用・操作パネルなし）
-    with tab_all:
-        st.caption("📋 すべての登録銘柄の一覧です（閲覧専用）")
-        disp_all = df_all[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
+    # マイルドなアップダウンカラー適用のためのスタイラー関数
+    def style_dataframe(df_target):
+        disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
+        
+        def color_cells(v):
+            if pd.isna(v):
+                return ''
+            if isinstance(v, (int, float)):
+                if v > 0:
+                    return 'color: #f87171; font-weight: 600;'  # 少し淡い赤（目に優しいトーン）
+                elif v < 0:
+                    return 'color: #60a5fa; font-weight: 600;'  # 少し淡い青（目に優しいトーン）
+            return ''
+
+        styler = disp_df.style
+        map_fn = styler.map if hasattr(styler, 'map') else styler.applymap
+        styled = map_fn(color_cells, subset=['前日比', '1週', '25日乖離']).format({
+            '現在値': '{:,.1f} 円',
+            '前日比': '{:+.2f}%',
+            '1週': '{:+.2f}%',
+            '25日乖離': '{:+.1f}%',
+            '利回り': '{:.2f}%'
+        }, na_rep='-')
+        
         st.dataframe(
-            disp_all,
+            styled,
             use_container_width=True,
             hide_index=True,
             column_config={
                 "状態": st.column_config.TextColumn("所属", width="small"),
                 "コード": st.column_config.TextColumn("コード", width="small"),
                 "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
-                "現在値": st.column_config.NumberColumn("現在値", format="%.1f 円"),
-                "前日比": st.column_config.NumberColumn("前日比", format="%+.2f %%"),
-                "1週": st.column_config.NumberColumn("1週騰落", format="%+.2f %%"),
-                "25日乖離": st.column_config.NumberColumn("25日乖離", format="%+.1f %%"),
-                "利回り": st.column_config.NumberColumn("利回り", format="%.2f %%"),
+                "現在値": st.column_config.NumberColumn("現在値"),
+                "前日比": st.column_config.NumberColumn("前日比"),
+                "1週": st.column_config.NumberColumn("1週騰落"),
+                "25日乖離": st.column_config.NumberColumn("25日乖離"),
+                "利回り": st.column_config.NumberColumn("利回り"),
             }
         )
+
+    # 1. 「すべて」タブ（閲覧専用・操作パネルなし）
+    with tab_all:
+        st.caption("📋 すべての登録銘柄の一覧です（閲覧専用）")
+        style_dataframe(df_all)
 
     # 2. 操作可能なタブ（監視・保有・趣味）のレンダリング関数
     def render_action_tab(tag_name):
         subset_df = df_all[df_all["状態"] == tag_name].copy()
         
-        # クイック操作パネル（テキスト検索 ＋ 正確な連動セレクト ＋ ワンタッチ移動ボタン）
         with st.container(border=True):
             st.markdown(f"##### ⚡ 【{tag_name}】クイック操作パネル")
             
-            # タブごとの候補リストを作成
             tab_codes = df_all[df_all["状態"] == tag_name]["コード"].tolist()
             if not tab_codes:
                 st.info(f"「{tag_name}」タブに該当する銘柄はありません。")
             else:
-                # テキスト入力による検索窓
                 q_key = f"search_input_{tag_name}"
                 search_val = st.text_input(f"銘柄を検索 ({tag_name}タブ内)", placeholder="コードまたは銘柄名を入力（例: 8058 または セブン）", key=q_key)
                 
-                # 検索ワードで絞り込み
                 filtered_codes = tab_codes
                 if search_val.strip():
                     q_low = search_val.strip().lower()
                     filtered_codes = [c for c in tab_codes if q_low in c.lower() or q_low in st.session_state.company_names.get(c, "").lower()]
                 
                 if filtered_codes:
-                    # 連動するセレクトボックス（絞り込まれた中から選択）
                     sel_c = st.selectbox(
                         "該当銘柄",
                         filtered_codes,
@@ -549,15 +568,13 @@ if not df_all.empty:
                         cur_p = r_match.iloc[0]["現在値"] if not r_match.empty else None
                         ma_dev = r_match.iloc[0]["25日乖離"] if not r_match.empty else None
 
-                        # 操作ボタン群（診断、他タブへの移動ボタン、削除）
                         other_tags = [t for t in STATUS_OPTS if t != tag_name]
-                        total_btns = 1 + len(other_tags) + 1  # 診断 + 移動先数 + 削除
+                        total_btns = 1 + len(other_tags) + 1
                         btn_cols = st.columns(total_btns)
                         
                         if btn_cols[0].button("🔍 診断", key=f"btn_diag_{tag_name}_{sel_c}", use_container_width=True):
                             show_detail_dialog(sel_c, s_name, s_tag, cur_p=cur_p, ma25_dev=ma_dev)
 
-                        # 各移動先への専用ボタンを横並びで配置
                         for idx, ot in enumerate(other_tags):
                             if btn_cols[1 + idx].button(f"👉 {ot}へ", key=f"btn_move_{tag_name}_{sel_c}_{ot}", use_container_width=True):
                                 cur_t = dict(st.session_state.company_tags)
@@ -580,23 +597,7 @@ if not df_all.empty:
 
         st.markdown("---")
 
-        # 一覧テーブル表示
-        disp_sub = subset_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
-        st.dataframe(
-            disp_sub,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "状態": st.column_config.TextColumn("所属", width="small"),
-                "コード": st.column_config.TextColumn("コード", width="small"),
-                "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
-                "現在値": st.column_config.NumberColumn("現在値", format="%.1f 円"),
-                "前日比": st.column_config.NumberColumn("前日比", format="%+.2f %%"),
-                "1週": st.column_config.NumberColumn("1週騰落", format="%+.2f %%"),
-                "25日乖離": st.column_config.NumberColumn("25日乖離", format="%+.1f %%"),
-                "利回り": st.column_config.NumberColumn("利回り", format="%.2f %%"),
-            }
-        )
+        style_dataframe(subset_df)
 
     with tab_watch:
         render_action_tab("監視")
