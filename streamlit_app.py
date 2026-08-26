@@ -328,8 +328,11 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
         except Exception as e:
             st.error(f"詳細診断エラー: {e}")
 
-@st.cache_data(ttl=300)
-def fetch_watchlist_data_cached(tickers_tuple):
+# セッションステートで株価データを保持し、削除時の無駄な再取得（ロード）を完全になくす爆速設計
+if "cached_price_df" not in st.session_state:
+    st.session_state.cached_price_df = pd.DataFrame()
+
+def fetch_watchlist_data_memory(tickers_tuple):
     if not tickers_tuple: return pd.DataFrame()
     cln = list(dict.fromkeys([norm_c(t) for t in tickers_tuple]))
     try:
@@ -375,7 +378,9 @@ def fetch_watchlist_data_cached(tickers_tuple):
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
-    st.cache_data.clear(); st.rerun()
+    with st.spinner("株価データ更新中..."):
+        st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+    st.rerun()
 
 with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"):
     t_add, t_div, t_del = st.tabs(["➕ 追加", "💰 配当手動固定", "🗑️ 削除"])
@@ -401,7 +406,9 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     cur_t[c] = "監視"
                     if c not in cur_w: cur_w.append(c)
                 save_data(cur_w, cur_n, cur_t)
-                st.cache_data.clear(); st.rerun()
+                with st.spinner("新規銘柄の株価取得中..."):
+                    st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+                st.rerun()
     with t_div:
         st.caption("Yahooの自動取得値がおかしい銘柄に、正式な「今期予想年間配当（円）」を手動で設定して固定します。")
         d_c = st.selectbox("対象銘柄選択", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, '')}", key="div_sel")
@@ -417,22 +424,38 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     del st.session_state.manual_divs[c_key]
                     st.info(f"{d_c} の手動固定を解除し、自動取得に戻しました。")
             save_manual_dividends(st.session_state.manual_divs)
-            st.cache_data.clear(); st.rerun()
+            with st.spinner("更新中..."):
+                st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+            st.rerun()
     with t_del:
         del_targets = st.multiselect("削除銘柄", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, c)}")
         if st.button("一括削除", type="secondary"):
             if del_targets:
-                save_data([c for c in st.session_state.watchlist if c not in [norm_c(x) for x in del_targets]], dict(st.session_state.company_names), dict(st.session_state.company_tags))
-                st.cache_data.clear(); st.toast("削除完了！"); st.rerun()
+                new_w = [c for c in st.session_state.watchlist if c not in [norm_c(x) for x in del_targets]]
+                cur_n = dict(st.session_state.company_names)
+                cur_t = dict(st.session_state.company_tags)
+                for x in del_targets:
+                    cur_n.pop(norm_c(x), None)
+                    cur_t.pop(norm_c(x), None)
+                save_data(new_w, cur_n, cur_t)
+                # メモリ上のキャッシュDFからも即座に除外（API再取得なしで爆速反映）
+                if not st.session_state.cached_price_df.empty:
+                    st.session_state.cached_price_df = st.session_state.cached_price_df[~st.session_state.cached_price_df["コード"].isin([norm_c(x) for x in del_targets])]
+                st.toast("削除完了！")
+                st.rerun()
 
-with st.spinner("株価データ読込中..."):
-    df_prices = fetch_watchlist_data_cached(tuple(st.session_state.watchlist))
+# 初回起動時のみ価格データを取得
+if st.session_state.cached_price_df.empty and st.session_state.watchlist:
+    with st.spinner("初期株価データ読込中..."):
+        st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+
+df_prices = st.session_state.cached_price_df
 
 rows = []
 for c in st.session_state.watchlist:
     tag = st.session_state.company_tags.get(c, "監視")
     name = st.session_state.company_names.get(c, c)
-    p_row = df_prices[df_prices["コード"] == c] if not df_prices.empty else pd.DataFrame()
+    p_row = df_prices[df_prices["コード"] == c] if not df_prices.empty and "コード" in df_prices.columns else pd.DataFrame()
     
     row_data = {"状態": tag, "コード": c, "銘柄名": name}
     if not p_row.empty:
@@ -489,7 +512,7 @@ if not df_all.empty:
     # 4タブ構成
     tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
-    # マイルドなアップダウンカラー適用のためのスタイラー関数
+    # マイルドなアップダウンカラー＆スリムなカラム幅を適用するスタイラー関数
     def style_dataframe(df_target):
         disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
         
@@ -498,9 +521,9 @@ if not df_all.empty:
                 return ''
             if isinstance(v, (int, float)):
                 if v > 0:
-                    return 'color: #f87171; font-weight: 600;'  # 少し淡い赤（目に優しいトーン）
+                    return 'color: #f87171; font-weight: 600;'  # 薄めのマイルドな赤
                 elif v < 0:
-                    return 'color: #60a5fa; font-weight: 600;'  # 少し淡い青（目に優しいトーン）
+                    return 'color: #60a5fa; font-weight: 600;'  # 薄めのマイルドな青
             return ''
 
         styler = disp_df.style
@@ -583,6 +606,7 @@ if not df_all.empty:
                                 st.toast(f"{s_name} を「{ot}」に移動しました！")
                                 st.rerun()
 
+                        # 削除ボタン（API再取得なしのノーロード爆速削除）
                         if btn_cols[-1].button("🗑️ 削除", key=f"btn_del_{tag_name}_{sel_c}", use_container_width=True, type="secondary"):
                             new_w = [w for w in st.session_state.watchlist if w != sel_c]
                             cur_n = dict(st.session_state.company_names)
@@ -590,6 +614,8 @@ if not df_all.empty:
                             cur_n.pop(sel_c, None)
                             cur_t.pop(sel_c, None)
                             save_data(new_w, cur_n, cur_t)
+                            if not st.session_state.cached_price_df.empty:
+                                st.session_state.cached_price_df = st.session_state.cached_price_df[st.session_state.cached_price_df["コード"] != sel_c]
                             st.toast(f"{s_name} を削除しました。")
                             st.rerun()
                 else:
