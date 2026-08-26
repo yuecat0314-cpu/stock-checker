@@ -10,18 +10,17 @@ import pytz
 st.set_page_config(page_title="高配当株 監視＆3軸診断", layout="wide", page_icon="📈")
 WATCHLIST_FILE = "watchlist.json"
 NAMES_FILE = "company_names.json"
-MANUAL_DIV_FILE = "manual_dividends.json"  # 手動固定用ファイル
+MANUAL_DIV_FILE = "manual_dividends.json"
 JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
 INIT_DATA = {
-    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中"),
- }
+    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中")
+}
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
-# --- 手動配当データの管理 ---
 def load_manual_dividends():
     if os.path.exists(MANUAL_DIV_FILE):
         try:
@@ -41,28 +40,41 @@ def save_manual_dividends(m_divs):
 if "manual_divs" not in st.session_state:
     st.session_state.manual_divs = load_manual_dividends()
 
-# --- 配当データの正規化層（手動優先 ＆ フォールバック廃止） ---
+# --- 配当データの取得層（発表値ベース復帰 ＋ 手動完全優先） ---
 def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, "N/A", None
 
-    expected_d = 0.0
-    source_type = "N/A"
-    warn_msg = None
-
-    # 1. 【最優先】手動固定値が存在するかチェック
     code_norm = norm_c(code)
+    source_type = "自動取得(発表値)"
+    div_y = 0.0
+    annual_d = 0.0
+
+    # 1. 【最優先】手動固定値が存在する場合
     if code_norm in st.session_state.manual_divs:
-        expected_d = st.session_state.manual_divs[code_norm]
+        annual_d = st.session_state.manual_divs[code_norm]
+        div_y = (annual_d / float(cur_price)) * 100
         source_type = "手動固定"
     else:
-        # 2. 自動取得 (dividendRate のみ。過去実績へのフォールバックは絶対しない)
-        d_rate = info_dict.get("dividendRate")
-        if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-            expected_d = float(d_rate)
-            source_type = "自動取得"
+        # 2. 発表されている利回り（dividendYield）をベースに取得するスタイルに復帰
+        raw_y = info_dict.get("dividendYield")
+        if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
+            raw_val = float(raw_y)
+            div_y = raw_val * 100 if raw_val < 0.20 else raw_val
+            annual_d = (div_y / 100.0) * float(cur_price)
+        else:
+            raw_ty = info_dict.get("trailingAnnualDividendYield")
+            if raw_ty is not None and not pd.isna(raw_ty) and float(raw_ty) > 0:
+                raw_val = float(raw_ty)
+                div_y = raw_val * 100 if raw_val < 0.20 else raw_val
+                annual_d = (div_y / 100.0) * float(cur_price)
+            else:
+                d_rate = info_dict.get("dividendRate")
+                if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+                    annual_d = float(d_rate)
+                    div_y = (annual_d / float(cur_price)) * 100
 
-    # 3. 過去の実績配当（直近完了年度）の算出（比較・検証用）
+    # 過去の実績配当（比較・検証用）
     hist_div_actual = 0.0
     if ticker_obj is not None:
         try:
@@ -76,16 +88,11 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
         except Exception:
             pass
 
-    # 4. 異常検知・警告（自動取得値が実績の3倍以上乖離、または利回りが異常に高い場合）
-    div_y = (expected_d / float(cur_price)) * 100 if expected_d > 0 else 0.0
-    
-    if source_type == "自動取得":
-        if hist_div_actual > 0 and expected_d >= hist_div_actual * 3.0:
-            warn_msg = f"⚠️ 会社予想配当({expected_d:.1f}円)が直近実績({hist_div_actual:.1f}円)と大幅に乖離しています（要確認）。"
-        elif div_y >= 10.0:
-            warn_msg = f"🚨 利回りが{div_y:.1f}%と極めて高水準です。データ誤登録の可能性があります（要開示確認）。"
+    warn_msg = None
+    if source_type != "手動固定" and div_y >= 10.0:
+        warn_msg = f"🚨 利回りが{div_y:.1f}%と高水準です。念のため公式開示情報をご確認ください。"
 
-    return div_y, expected_d, hist_div_actual, source_type, warn_msg
+    return div_y, annual_d, hist_div_actual, source_type, warn_msg
 
 def load_data():
     names = {norm_c(k): v[0] for k, v in INIT_DATA.items()}
@@ -302,7 +309,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
                 st.warning(warn_div)
 
             pbr_disp = f"`{pbr_val:.2f}倍`" if pbr_val is not None else "`欠損`"
-            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 予想配当: `{annual_d:.1f}円` ({source_type}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
+            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 想定年間配当: `{annual_d:.1f}円` ({source_type}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
