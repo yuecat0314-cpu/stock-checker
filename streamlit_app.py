@@ -16,23 +16,43 @@ WATCHLIST_FILE = "watchlist.json"
 NAMES_FILE = "company_names.json"
 JST = pytz.timezone('Asia/Tokyo')
 
+STATUS_OPTIONS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
+
 INITIAL_DATA = {
-    "8058": "三菱商事", "3355": "クリヤマHD", "9433": "KDDI", "2428": "ウェルネット",
-    "4767": "TOW", "4845": "フュージョン", "2181": "パーソルHD", "1840": "土屋HD",
-    "7203": "トヨタ自動車", "2411": "ゲンダイAG", "2926": "篠崎屋", "8729": "ソニーFG",
-    "6093": "エスクローAJ", "9432": "NTT", "3010": "ポラリスHD", "2183": "リニカル",
-    "4714": "リソー教育", "7795": "協立電機", "2146": "UTグループ", "9434": "ソフトバンク",
-    "8410": "セブン銀行", "4503": "アステラス製薬", "5032": "ANYCOLOR", "5253": "カバー",
-    "8306": "三菱UFJ FG", "8316": "三井住友FG", "8001": "伊藤忠商事", "2914": "JT",
-    "1928": "積水ハウス", "8593": "三菱HCキャピタル", "1414": "ショーボンドHD", "197A": "タウンズ"
+    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"),
+    "9433": ("KDDI", "👀 監視中"), "2428": ("ウェルネット", "👀 監視中"),
+    "4767": ("TOW", "👀 監視中"), "4845": ("スカラ", "👀 監視中"),
+    "2181": ("パーソルHD", "👀 監視中"), "1840": ("土屋HD", "👀 監視中"),
+    "7203": ("トヨタ自動車", "👀 監視中"), "2411": ("ゲンダイAG", "👀 監視中"),
+    "2926": ("篠崎屋", "👀 監視中"), "8729": ("ソニーFG", "👀 監視中"),
+    "6093": ("ミトラG", "👀 監視中"), "9432": ("NTT", "👀 監視中"),
+    "3010": ("ポラリスHD", "👀 監視中"), "2183": ("リニカル", "👀 監視中"),
+    "4714": ("リソー教育", "👀 監視中"), "7795": ("KYORITSU", "👀 監視中"),
+    "2146": ("UTグループ", "👀 監視中"), "9434": ("ソフトバンク", "👀 監視中"),
+    "8410": ("セブン銀行", "👀 監視中"), "4503": ("アステラス製薬", "👀 監視中"),
+    "5032": ("ANYCOLOR", "👀 監視中"), "5253": ("カバー", "👀 監視中"),
+    "8306": ("三菱UFJ FG", "👀 監視中"), "8316": ("三井住友FG", "👀 監視中"),
+    "8001": ("伊藤忠商事", "👀 監視中"), "2914": ("JT", "👀 監視中"),
+    "1928": ("積水ハウス", "👀 監視中"), "8593": ("三菱HCキャピタル", "👀 監視中"),
+    "1414": ("ショーボンド", "👀 監視中"), "197A": ("タウンズ", "👀 監視中")
 }
 
 def normalize_code(code):
     norm = unicodedata.normalize("NFKC", str(code))
     return norm.strip().upper()
 
+# --- データ読み込み・保存 ---
 def load_data():
-    names = {normalize_code(k): v for k, v in INITIAL_DATA.items()}
+    names = {}
+    tags = {}
+
+    # 初期設定
+    for k, (n, t) in INITIAL_DATA.items():
+        c = normalize_code(k)
+        names[c] = n
+        tags[c] = t
+
+    # 企業名ファイル読み込み
     if os.path.exists(NAMES_FILE):
         try:
             with open(NAMES_FILE, "r", encoding="utf-8") as f:
@@ -42,39 +62,56 @@ def load_data():
         except:
             pass
 
-    tickers = list(dict.fromkeys([normalize_code(c) for c in names.keys()]))
+    # 監視リストファイル読み込み（旧形式のリスト形式・新形式の辞書形式の両方に対応）
+    tickers = list(names.keys())
     if os.path.exists(WATCHLIST_FILE):
         try:
             with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                if isinstance(loaded, list) and len(loaded) > 0:
-                    tickers = list(dict.fromkeys([normalize_code(c) for c in loaded]))
+                if isinstance(loaded, dict):
+                    tickers = list(loaded.keys())
+                    for k, v in loaded.items():
+                        tags[normalize_code(k)] = v if v in STATUS_OPTIONS else "👀 監視中"
+                elif isinstance(loaded, list):
+                    tickers = [normalize_code(c) for c in loaded]
+                    for c in tickers:
+                        if c not in tags: tags[c] = "👀 監視中"
         except:
             pass
-    return tickers, names
 
-def save_data(tickers, names):
+    clean_tickers = list(dict.fromkeys([normalize_code(c) for c in tickers]))
+    for c in clean_tickers:
+        if c not in tags:
+            tags[c] = "👀 監視中"
+
+    return clean_tickers, names, tags
+
+def save_data(tickers, names, tags):
     clean_tickers = list(dict.fromkeys([normalize_code(c) for c in tickers]))
     st.session_state.watchlist = clean_tickers
     st.session_state.company_names = names
+    st.session_state.company_tags = tags
     try:
+        # watchlist.json にタグ情報も紐付けて保存
+        tag_dict = {c: tags.get(c, "👀 監視中") for c in clean_tickers}
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(clean_tickers, f, ensure_ascii=False, indent=2)
+            json.dump(tag_dict, f, ensure_ascii=False, indent=2)
         with open(NAMES_FILE, "w", encoding="utf-8") as f:
             json.dump(names, f, ensure_ascii=False, indent=2)
     except:
         pass
 
-if "watchlist" not in st.session_state or "company_names" not in st.session_state:
-    w, n = load_data()
+if "watchlist" not in st.session_state or "company_tags" not in st.session_state:
+    w, n, t = load_data()
     st.session_state.watchlist = w
     st.session_state.company_names = n
+    st.session_state.company_tags = t
 
 # --- 8つのものさし詳細診断モーダル ---
 @st.dialog("📊 銘柄健全性・8つのものさし詳細診断", width="large")
-def show_detail_dialog(code, name):
+def show_detail_dialog(code, name, status):
     ticker_symbol = f"{normalize_code(code)}.T"
-    st.caption(f"対象銘柄: **{name}** ({ticker_symbol})")
+    st.caption(f"対象銘柄: **{name}** ({ticker_symbol}) ｜ 状態: **{status}**")
     
     with st.spinner("詳細な財務諸表と配当データを取得中..."):
         try:
@@ -191,7 +228,7 @@ def show_detail_dialog(code, name):
 
 # --- 高速バッチデータ取得 ---
 @st.cache_data(ttl=60)
-def fetch_watchlist_data(tickers, names_dict):
+def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers:
         return pd.DataFrame(), ""
     
@@ -205,11 +242,12 @@ def fetch_watchlist_data(tickers, names_dict):
     for code_str in clean_tickers:
         sym = f"{code_str}.T"
         jp_name = names_dict.get(code_str, code_str)
+        tag_val = tags_dict.get(code_str, "👀 監視中")
         try:
             df = data[sym] if len(clean_tickers) > 1 else data
             df = df.dropna(how="all")
             if len(df) < 2:
-                rows.append({"コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan})
+                rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan})
                 continue
             
             cur_price = float(df["Close"].iloc[-1])
@@ -225,6 +263,7 @@ def fetch_watchlist_data(tickers, names_dict):
             div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
 
             rows.append({
+                "状態": tag_val,
                 "コード": code_str,
                 "銘柄名": jp_name,
                 "現在値": cur_price,
@@ -235,7 +274,7 @@ def fetch_watchlist_data(tickers, names_dict):
             })
         except:
             rows.append({
-                "コード": code_str, "銘柄名": jp_name,
+                "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
                 "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
                 "1週間騰落": np.nan, "配当利回り": np.nan
             })
@@ -259,14 +298,17 @@ with c_refresh:
         st.rerun()
 
 # 銘柄管理エリア
-with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / 削除）"):
-    tab_add, tab_edit, tab_del = st.tabs(["➕ 銘柄を追加", "✏️ 銘柄名を編集・登録", "🗑️ 銘柄を削除"])
+with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / 編集 / 削除）"):
+    tab_add, tab_edit, tab_del = st.tabs(["➕ 銘柄を追加", "✏️ 名前・状態（タグ）を変更", "🗑️ 銘柄を削除"])
     
+    # 1. 追加
     with tab_add:
-        c_add1, c_add2 = st.columns([3, 1])
+        c_add1, c_add2, c_add3 = st.columns([2.5, 1.2, 1])
         with c_add1:
-            new_input = st.text_input("銘柄コード（「コード:名前」またはカンマ区切り）", placeholder="例: 7466:SPK, 7822:アートネイチャー, 9193")
+            new_input = st.text_input("銘柄コード（「コード:名前」またはカンマ区切り）", placeholder="例: 8058:三菱商事, 9432")
         with c_add2:
+            new_status = st.selectbox("追加時の状態", options=STATUS_OPTIONS, index=0)
+        with c_add3:
             st.write("")
             st.write("")
             if st.button("追加する", type="primary", use_container_width=True):
@@ -274,6 +316,7 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
                     items = [i.strip() for i in new_input.split(",") if i.strip()]
                     cur_w = list(st.session_state.watchlist)
                     cur_n = dict(st.session_state.company_names)
+                    cur_t = dict(st.session_state.company_tags)
                     added_count = 0
                     for it in items:
                         if ":" in it or "：" in it:
@@ -283,35 +326,45 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
                             cur_n[c] = n.strip()
                         else:
                             c = normalize_code(it)
+                        cur_t[c] = new_status
                         if c not in cur_w:
                             cur_w.append(c)
                             added_count += 1
-                    save_data(cur_w, cur_n)
+                    save_data(cur_w, cur_n, cur_t)
                     st.cache_data.clear()
                     st.rerun()
 
+    # 2. 編集（名前 ＋ 状態タグ変更）
     with tab_edit:
-        c_ed1, c_ed2, c_ed3 = st.columns([1.5, 2, 1])
+        c_ed1, c_ed2, c_ed3, c_ed4 = st.columns([1.5, 1.5, 1.2, 1])
         with c_ed1:
             edit_code = st.selectbox(
-                "名前を変更する銘柄を選択",
+                "変更する銘柄を選択",
                 options=st.session_state.watchlist,
                 format_func=lambda c: f"{c} ({st.session_state.company_names.get(c, '未登録')})"
             )
         with c_ed2:
             current_name_val = st.session_state.company_names.get(edit_code, edit_code)
-            new_name_val = st.text_input("表示する企業名（略称OK）", value=current_name_val)
+            new_name_val = st.text_input("企業名（略称OK）", value=current_name_val)
         with c_ed3:
+            current_tag_val = st.session_state.company_tags.get(edit_code, "👀 監視中")
+            tag_idx = STATUS_OPTIONS.index(current_tag_val) if current_tag_val in STATUS_OPTIONS else 0
+            new_tag_val = st.selectbox("状態（タグ）", options=STATUS_OPTIONS, index=tag_idx)
+        with c_ed4:
             st.write("")
             st.write("")
-            if st.button("名前を保存", type="primary", use_container_width=True):
+            if st.button("保存する", type="primary", use_container_width=True):
                 cur_n = dict(st.session_state.company_names)
-                cur_n[normalize_code(edit_code)] = new_name_val.strip()
-                save_data(list(st.session_state.watchlist), cur_n)
+                cur_t = dict(st.session_state.company_tags)
+                norm_c = normalize_code(edit_code)
+                cur_n[norm_c] = new_name_val.strip()
+                cur_t[norm_c] = new_tag_val
+                save_data(list(st.session_state.watchlist), cur_n, cur_t)
                 st.cache_data.clear()
-                st.toast("企業名を保存しました！", icon="💾")
+                st.toast("設定を保存しました！", icon="💾")
                 st.rerun()
 
+    # 3. 削除
     with tab_del:
         delete_targets = st.multiselect(
             "削除したい銘柄を選択してください（複数選択可）",
@@ -323,40 +376,74 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
             if delete_targets:
                 norm_targets = [normalize_code(c) for c in delete_targets]
                 cur_w = [c for c in st.session_state.watchlist if c not in norm_targets]
-                save_data(cur_w, dict(st.session_state.company_names))
+                save_data(cur_w, dict(st.session_state.company_names), dict(st.session_state.company_tags))
                 st.cache_data.clear()
                 st.toast("選択した銘柄を削除しました！", icon="🗑️")
                 st.rerun()
 
-# データ取得＆一覧表示
+# データ取得
 with st.spinner("株価データを更新中..."):
-    df_result, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names)
-
-st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** ｜ 取得時刻: **{update_time}** (※東証データは約20分ディレイ)")
-
-if not df_result.empty:
-    styled_df = df_result.style.map(
-        color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
-    ).format({
-        '現在値': '{:,.1f} 円',
-        '前日差': '{:+,.1f} 円',
-        '前日比(%)': '{:+.2f}%',
-        '1週間騰落': '{:+.2f}%',
-        '配当利回り': '{:.2f}%'
-    }, na_rep='-')
-
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-
-    # ポップアップ診断エリア
-    st.write("---")
-    st.subheader("🔍 タップして8つのものさしを診断")
-    
-    target_code = st.selectbox(
-        "診断したい銘柄を選択",
-        options=df_result["コード"].tolist(),
-        format_func=lambda c: f"{c} - {df_result.loc[df_result['コード']==c, '銘柄名'].values[0]}"
+    df_all, update_time = fetch_watchlist_data(
+        st.session_state.watchlist,
+        st.session_state.company_names,
+        st.session_state.company_tags
     )
-    
-    if st.button("🚀 選択した銘柄の8指標をポップアップ診断", type="primary", use_container_width=True):
-        target_name = df_result.loc[df_result['コード']==target_code, '銘柄名'].values[0]
-        show_detail_dialog(target_code, target_name)
+
+st.caption(f"登録総数: **{len(st.session_state.watchlist)} 銘柄** ｜ 取得時刻: **{update_time}** (※東証データは約20分ディレイ)")
+
+# --- タブ切替表示 ---
+if not df_all.empty:
+    count_all = len(df_all)
+    count_hold = len(df_all[df_all["状態"] == "💼 保有中"])
+    count_buy = len(df_all[df_all["状態"] == "🎯 買いたい"])
+    count_watch = len(df_all[df_all["状態"] == "👀 監視中"])
+
+    tab_v_all, tab_v_hold, tab_v_buy, tab_v_watch = st.tabs([
+        f"すべて ({count_all})",
+        f"💼 保有中 ({count_hold})",
+        f"🎯 買いたい ({count_buy})",
+        f"👀 監視中 ({count_watch})"
+    ])
+
+    def render_stock_table(df_subset, tab_key):
+        if df_subset.empty:
+            st.info("該当する銘柄がありません。「⚙️ 管理エリア」から状態を設定してください。")
+            return
+
+        styled = df_subset.style.map(
+            color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
+        ).format({
+            '現在値': '{:,.1f} 円',
+            '前日差': '{:+,.1f} 円',
+            '前日比(%)': '{:+.2f}%',
+            '1週間騰落': '{:+.2f}%',
+            '配当利回り': '{:.2f}%'
+        }, na_rep='-')
+
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        st.write("---")
+        c_sel, c_diag = st.columns([3, 1])
+        with c_sel:
+            t_code = st.selectbox(
+                "診断する銘柄を選択",
+                options=df_subset["コード"].tolist(),
+                format_func=lambda c: f"{c} - {df_subset.loc[df_subset['コード']==c, '銘柄名'].values[0]} ({df_subset.loc[df_subset['コード']==c, '状態'].values[0]})",
+                key=f"sel_{tab_key}"
+            )
+        with c_diag:
+            st.write("")
+            st.write("")
+            if st.button("🚀 8指標を診断", type="primary", use_container_width=True, key=f"btn_{tab_key}"):
+                t_name = df_subset.loc[df_subset['コード']==t_code, '銘柄名'].values[0]
+                t_stat = df_subset.loc[df_subset['コード']==t_code, '状態'].values[0]
+                show_detail_dialog(t_code, t_name, t_stat)
+
+    with tab_v_all:
+        render_stock_table(df_all, "all")
+    with tab_v_hold:
+        render_stock_table(df_all[df_all["状態"] == "💼 保有中"], "hold")
+    with tab_v_buy:
+        render_stock_table(df_all[df_all["状態"] == "🎯 買いたい"], "buy")
+    with tab_v_watch:
+        render_stock_table(df_all[df_all["状態"] == "👀 監視中"], "watch")
