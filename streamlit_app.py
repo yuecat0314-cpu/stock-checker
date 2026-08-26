@@ -15,8 +15,8 @@ JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
 INIT_DATA = {
-    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中")
-}
+    "8058": ("三菱商事", "👀 監視中"), "3355": ("クリヤマHD", "👀 監視中"), "9433": ("KDDI", "👀 監視中"),
+ }
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
@@ -40,7 +40,6 @@ def save_manual_dividends(m_divs):
 if "manual_divs" not in st.session_state:
     st.session_state.manual_divs = load_manual_dividends()
 
-# --- 配当データの取得層（発表値ベース復帰 ＋ 手動完全優先） ---
 def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, "N/A", None
@@ -50,13 +49,11 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     div_y = 0.0
     annual_d = 0.0
 
-    # 1. 【最優先】手動固定値が存在する場合
     if code_norm in st.session_state.manual_divs:
         annual_d = st.session_state.manual_divs[code_norm]
         div_y = (annual_d / float(cur_price)) * 100
         source_type = "手動固定"
     else:
-        # 2. 発表されている利回り（dividendYield）をベースに取得するスタイルに復帰
         raw_y = info_dict.get("dividendYield")
         if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
             raw_val = float(raw_y)
@@ -74,7 +71,6 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
                     annual_d = float(d_rate)
                     div_y = (annual_d / float(cur_price)) * 100
 
-    # 過去の実績配当（比較・検証用）
     hist_div_actual = 0.0
     if ticker_obj is not None:
         try:
@@ -357,7 +353,17 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict, manual_divs_keys):
             div_y, _, _, _, _ = get_dividend_data(c, t_obj.info, cur_p, ticker_obj=t_obj)
         except Exception:
             pass
-        rows.append({"状態": tags_dict.get(c, "👀 監視中"), "コード": c, "銘柄名": names_dict.get(c, c), "現在値": cur_p, "前日差": diff, "前日比": diff_pct, "1週": week_pct, "利回り": div_y, "ma25_dev": ma25_dev})
+        rows.append({
+            "状態": tags_dict.get(c, "👀 監視中"), 
+            "コード": c, 
+            "銘柄名": names_dict.get(c, c), 
+            "現在値": cur_p, 
+            "前日差": diff, 
+            "前日比": diff_pct, 
+            "1週": week_pct, 
+            "25日乖離": ma25_dev, 
+            "利回り": div_y
+        })
     return pd.DataFrame(rows), now_str
 
 def color_cells(v):
@@ -424,24 +430,32 @@ st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻:
 
 if not df_all.empty:
     valid_df = df_all.dropna(subset=["現在値"])
+    
     signals = []
     if not valid_df.empty:
-        for _, r in valid_df[(valid_df["ma25_dev"] <= -3.0) | (valid_df["前日比"] <= -2.0)].iterrows():
-            signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['ma25_dev']:+.1f}%`, 利回り `{r['利回り']:.2f}%`")
-        for _, r in valid_df[valid_df["利回り"] >= 5.0].iterrows():
-            signals.append(f"💰 **【高利回り突入】** {r['銘柄名']} ({r['コード']}): 利回り `{r['利回り']:.2f}%`")
-        for _, r in valid_df[(valid_df["1週"] >= 8.0) | (valid_df["ma25_dev"] >= 8.0)].iterrows():
-            signals.append(f"🔴 **【過熱注意】** {r['銘柄名']} ({r['コード']}): 1週 `{r['1週']:+.1f}%`, 25日乖離 `{r['ma25_dev']:+.1f}%`")
+        # 1. 本物の押し目候補（25日線から下方乖離しつつ、本日もマイナスで調整中の銘柄）
+        for _, r in valid_df[(valid_df["25日乖離"] <= -2.5) & (valid_df["前日比"] < 0)].iterrows():
+            signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
+        
+        # 2. 過熱注意（1週間の急騰または25日線から上方乖離）
+        for _, r in valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].iterrows():
+            signals.append(f"🔴 **【過熱注意】** {r['銘柄名']} ({r['コード']}): 1週 `{r['1週']:+.1f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`")
+        
+        # 3. 高利回りTOP5（利回りの高い順）
+        high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
+        for _, r in high_yield_df.head(5).iterrows():
+            signals.append(f"💰 **【高利回りTOP】** {r['銘柄名']} ({r['コード']}): 利回り `{r['利回り']:.2f}%`")
     
-    st.subheader("🚨 今日見るべき注目シグナル")
+    st.subheader("🚨 今日見るべき注目シグナル ＆ 高利回りTOP5")
     if signals:
-        for s in signals[:5]: st.markdown(f"- {s}")
+        for s in signals[:8]: st.markdown(f"- {s}")
     else:
-        st.success("✅ 現在、極端な急落・過熱シグナルはありません。")
+        st.success("✅ 現在、該当するシグナルはありません。")
     st.divider()
 
     tab_all, tab_h, tab_b, tab_w = st.tabs([f"📋 すべて ({len(df_all)})", f"💼 保有中 ({len(df_all[df_all['状態'] == '💼 保有中'])})", f"🎯 買いたい ({len(df_all[df_all['状態'] == '🎯 買いたい'])})", f"👀 監視中 ({len(df_all[df_all['状態'] == '👀 監視中'])})"])
-    cols = ["状態", "コード", "銘柄名", "現在値", "前日差", "前日比", "1週", "利回り"]
+    # メインの表に「25日乖離」の列を追加
+    cols = ["状態", "コード", "銘柄名", "現在値", "前日差", "前日比", "1週", "25日乖離", "利回り"]
     
     def render_tbl(target_df):
         if target_df.empty: st.info("該当銘柄なし"); return
@@ -449,7 +463,7 @@ if not df_all.empty:
         try:
             styler = v_sub.style
             m_fn = styler.map if hasattr(styler, 'map') else styler.applymap
-            styled = m_fn(color_cells, subset=['前日差', '前日比', '1週']).format({'現在値': '{:,.1f} 円', '前日差': '{:+,.1f} 円', '前日比': '{:+.2f}%', '1週': '{:+.2f}%', '利回り': '{:.2f}%'}, na_rep='-')
+            styled = m_fn(color_cells, subset=['前日差', '前日比', '1週', '25日乖離']).format({'現在値': '{:,.1f} 円', '前日差': '{:+,.1f} 円', '前日比': '{:+.2f}%', '1週': '{:+.2f}%', '25日乖離': '{:+.2f}%', '利回り': '{:.2f}%'}, na_rep='-')
             st.dataframe(styled, use_container_width=True, hide_index=True)
         except Exception:
             st.dataframe(v_sub, use_container_width=True, hide_index=True)
