@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import json, os, unicodedata
+import json, os, unicodedata, requests, re
 from datetime import datetime
 import pytz
 
@@ -19,6 +19,22 @@ INIT_DATA = {}
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
+
+# Yahooファイナンス日本版から日本語の会社名を自動取得する関数
+def fetch_jp_company_name(code):
+    try:
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            match = re.search(r'<title>(.*?)(?:【|\(株\))', res.text)
+            if match:
+                name = match.group(1).replace("(株)", "").replace("（株）", "").strip()
+                if name:
+                    return name
+    except Exception:
+        pass
+    return code
 
 def load_manual_dividends():
     if os.path.exists(MANUAL_DIV_FILE):
@@ -100,9 +116,12 @@ def load_data():
     if os.path.exists(NAMES_FILE):
         try:
             with open(NAMES_FILE, "r", encoding="utf-8") as f:
-                names = {norm_c(k): str(v).strip() for k, v in json.load(f).items()}
+                loaded_names = json.load(f)
+                for k, v in loaded_names.items():
+                    names[norm_c(k)] = str(v).strip()
         except Exception:
             pass
+    
     tickers = list(names.keys())
     if os.path.exists(WATCHLIST_FILE):
         try:
@@ -120,9 +139,11 @@ def load_data():
                     tickers = [norm_c(c) for c in d]
         except Exception:
             pass
+            
     cln = list(dict.fromkeys([norm_c(c) for c in tickers]))
     for c in cln:
         if c not in tags: tags[c] = "監視"
+        if c not in names: names[c] = c
     return cln, names, tags
 
 def save_data(tickers, names, tags):
@@ -392,8 +413,11 @@ with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除 / 配当手動�
                     if not it.strip(): continue
                     parts = it.split(":", 1) if ":" in it else (it.split("：", 1) if "：" in it else (it, ""))
                     c = norm_c(parts[0])
-                    # 勝手に英語名を取得せず、指定がなければコードをそのまま名称にする（編集タブで日本語変更可能）
-                    n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else c
+                    
+                    # ユーザーが明示的に名前を指定していればそれを使う。指定がない場合は「Yahooファイナンス日本版から自動で日本語名を取得」する！
+                    n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+                    if not n_input:
+                        n_input = fetch_jp_company_name(c) # 自動日本語取得！
 
                     cur_n[c] = n_input
                     cur_t[c] = "監視"
@@ -458,7 +482,12 @@ df_prices = st.session_state.cached_price_df
 rows = []
 for c in st.session_state.watchlist:
     tag = st.session_state.company_tags.get(c, "監視")
-    name = st.session_state.company_names.get(c, c)
+    # 既存の日本語名を絶対保持し、未登録の場合のみYahooファイナンス日本版から日本語名を取得して保存する
+    name = st.session_state.company_names.get(c) or st.session_state.company_names.get(norm_c(c))
+    if not name or name == c or name.isdigit():
+        name = fetch_jp_company_name(c)
+        st.session_state.company_names[c] = name
+
     p_row = df_prices[df_prices["コード"] == c] if not df_prices.empty and "コード" in df_prices.columns else pd.DataFrame()
     
     row_data = {"状態": tag, "コード": c, "銘柄名": name}
@@ -490,7 +519,8 @@ if not df_all.empty:
         dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
         for _, r in dip_df.head(3).iterrows():
             has_signal = True
-            st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{r['利回り']:.2f}%`")
+            yld_str = f"{r['利回り']:.2f}%" if pd.notna(r['利回り']) and r['利回り'] > 0 else "-"
+            st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`")
         
         heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
         heat_items = []
@@ -503,7 +533,8 @@ if not df_all.empty:
         high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
         hy_items = []
         for _, r in high_yield_df.head(3).iterrows():
-            hy_items.append(f"**{r['銘柄名']} ({r['コード']})**: `{r['利回り']:.2f}%`")
+            yld_str = f"{r['利回り']:.2f}%" if pd.notna(r['利回り']) and r['利回り'] > 0 else "-"
+            hy_items.append(f"**{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
         if hy_items:
             has_signal = True
             st.markdown(f"- 💰 **【高利回り】** " + " ｜ ".join(hy_items))
@@ -537,7 +568,7 @@ if not df_all.empty:
             '前日比': '{:+.2f}%',
             '1週': '{:+.2f}%',
             '25日乖離': '{:+.1f}%',
-            '利回り': '{:.2f}%'
+            '利回り': lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-"
         }, na_rep='-')
         
         st.dataframe(
@@ -552,7 +583,7 @@ if not df_all.empty:
                 "前日比": st.column_config.NumberColumn("前日比"),
                 "1週": st.column_config.NumberColumn("1週騰落"),
                 "25日乖離": st.column_config.NumberColumn("25日乖離"),
-                "利回り": st.column_config.NumberColumn("利回り"),
+                "利回り": st.column_config.TextColumn("利回り"),
             }
         )
 
