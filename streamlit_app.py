@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import urllib.request
+import re
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュボード", layout="wide", page_icon="📈")
@@ -15,6 +17,20 @@ DEFAULT_TICKERS = [
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = DEFAULT_TICKERS.copy()
+
+# --- 日本語の企業名取得（キャッシュ付き） ---
+@st.cache_data(ttl=86400)
+def get_company_name_jp(code):
+    try:
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        html = urllib.request.urlopen(req, timeout=3).read().decode('utf-8')
+        match = re.search(r'<title>(.*?)【', html)
+        if match:
+            return match.group(1).strip()
+    except:
+        pass
+    return code
 
 # --- 8つのものさし詳細診断（ポップアップモーダル） ---
 @st.dialog("📊 銘柄健全性・8つのものさし詳細診断", width="large")
@@ -66,7 +82,7 @@ def show_detail_dialog(code, name):
                 net_incomes = income.loc["Net Income"].dropna()
                 profit_score, profit_desc = (100, "◎ 連続黒字") if (net_incomes > 0).all() else (25, "✕ 直近で赤字あり")
 
-            # 5. 配当継続力（支払配当金総額ベースで評価）
+            # 5. 配当継続力
             div_score = 60
             div_desc = "安定配当"
             if not cashflow.empty and "Cash Dividends Paid" in cashflow.index:
@@ -153,39 +169,55 @@ def fetch_watchlist_data(tickers):
             if len(df) < 2:
                 continue
             
-            cur_price = df["Close"].iloc[-1]
-            prev_price = df["Close"].iloc[-2]
+            cur_price = float(df["Close"].iloc[-1])
+            prev_price = float(df["Close"].iloc[-2])
             diff = cur_price - prev_price
             diff_pct = (diff / prev_price) * 100
             
             # 1週間（5営業日前）との騰落率
-            week_price = df["Close"].iloc[-6] if len(df) >= 6 else df["Close"].iloc[0]
+            week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
             week_pct = ((cur_price - week_price) / week_price) * 100
 
             info = yf.Ticker(sym).info
             raw_yield = info.get("dividendYield", 0) or 0
             div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
-            name = info.get("shortName", code)
+            
+            # 日本語企業名を取得
+            jp_name = get_company_name_jp(code)
 
             rows.append({
                 "コード": code,
-                "銘柄名": name,
-                "現在値": f"{cur_price:,.1f} 円",
-                "前日差": f"{diff:+,.1f} 円",
-                "前日比(%)": f"{diff_pct:+.2f}%",
-                "1週間騰落": f"{week_pct:+.2f}%",
-                "配当利回り": f"{div_yield:.2f}%",
+                "銘柄名": jp_name,
+                "現在値": cur_price,
+                "前日差": diff,
+                "前日比(%)": diff_pct,
+                "1週間騰落": week_pct,
+                "配当利回り": div_yield
             })
         except:
-            rows.append({"コード": code, "銘柄名": "取得エラー", "現在値": "-", "前日差": "-", "前日比(%)": "-", "1週間騰落": "-", "配当利回り": "-"})
+            rows.append({
+                "コード": code, "銘柄名": get_company_name_jp(code),
+                "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
+                "1週間騰落": np.nan, "配当利回り": np.nan
+            })
             
     return pd.DataFrame(rows)
 
-# --- メイン画面ヘッダー ---
-st.title("📈 高配当株 監視ダッシュボード")
-st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** （ページ制限なしで一括表示）")
+# --- スタイル関数（日本株カラー: プラス赤、マイナス青） ---
+def color_diff_cells(val):
+    if pd.isna(val):
+        return ''
+    if val > 0:
+        return 'color: #ff4d4f; font-weight: 700;'  # プラス＝赤
+    elif val < 0:
+        return 'color: #1890ff; font-weight: 700;'  # マイナス＝青
+    return 'color: #8c8c8c;'
 
-# --- 銘柄の追加・削除管理エリア ---
+# --- メイン画面 ---
+st.title("📈 高配当株 監視ダッシュボード")
+st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** （ページ制限なし・一括表示）")
+
+# 銘柄管理エリア
 with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
     tab_add, tab_del = st.tabs(["➕ 銘柄を追加", "🗑️ 銘柄を削除"])
     
@@ -209,7 +241,8 @@ with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
         delete_targets = st.multiselect(
             "削除したい銘柄を選択してください（複数選択可）",
             options=st.session_state.watchlist,
-            placeholder="削除するコードを選択..."
+            format_func=lambda c: f"{c} - {get_company_name_jp(c)}",
+            placeholder="削除する銘柄を選択..."
         )
         if st.button("選択した銘柄を一括削除", type="secondary", use_container_width=True):
             if delete_targets:
@@ -217,16 +250,28 @@ with st.expander("⚙️ 監視銘柄の管理（追加・削除）"):
                 st.cache_data.clear()
                 st.rerun()
 
-# --- 一覧テーブル表示 ---
+# データ取得＆一覧表示
 with st.spinner("株価・騰落・配当利回りを一括更新中..."):
     df_result = fetch_watchlist_data(st.session_state.watchlist)
 
 if not df_result.empty:
     st.write("---")
     st.subheader("📋 監視銘柄一覧")
-    st.dataframe(df_result, use_container_width=True, hide_index=True)
+    
+    # 日本株カラー ＆ 数値フォーマットを適用したPandas Styler
+    styled_df = df_result.style.map(
+        color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
+    ).format({
+        '現在値': '{:,.1f} 円',
+        '前日差': '{:+,.1f} 円',
+        '前日比(%)': '{:+.2f}%',
+        '1週間騰落': '{:+.2f}%',
+        '配当利回り': '{:.2f}%'
+    }, na_rep='-')
 
-    # --- ポップアップ診断エリア ---
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    # ポップアップ診断エリア
     st.write("---")
     st.subheader("🔍 タップして8つのものさしを診断")
     
