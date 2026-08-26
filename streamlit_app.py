@@ -6,17 +6,31 @@ import plotly.graph_objects as go
 import urllib.request
 import json
 import os
-import re
+import io
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュボード", layout="wide", page_icon="📈")
 
 WATCHLIST_FILE = "watchlist.json"
 
+# 初期銘柄リスト
 DEFAULT_TICKERS = [
     "8058", "3355", "9433", "2428", "4767", "4845", "2181", "1840", "7203", "2411",
-    "9432", "9434", "8410", "4503", "5032", "5253", "8306", "8316", "8001", "2914"
+    "2926", "8729", "6093", "9432", "3010", "2183", "4714", "7795", "2146", "9434",
+    "8410", "4503", "5032", "5253", "8306", "8316", "8001", "2914", "1928", "8593"
 ]
+
+# 代表的な監視銘柄の日本語マスター辞書（通信エラー時でも100%日本語表示）
+KNOWN_NAMES = {
+    "8058": "三菱商事", "3355": "クリヤマHD", "9433": "KDDI", "2428": "ウェルネット",
+    "4767": "TOW", "4845": "フュージョン", "2181": "パーソルHD", "1840": "土屋HD",
+    "7203": "トヨタ自動車", "2411": "ゲンダイAG", "2926": "篠崎屋", "8729": "ソニーFG",
+    "6093": "エスクローAJ", "9432": "NTT", "3010": "ポラリスHD", "2183": "リニカル",
+    "4714": "リソー教育", "7795": "協立電機", "2146": "UTグループ", "9434": "ソフトバンク",
+    "8410": "セブン銀行", "4503": "アステラス製薬", "5032": "ANYCOLOR", "5253": "カバー",
+    "8306": "三菱UFJ FG", "8316": "三井住友FG", "8001": "伊藤忠商事", "2914": "日本たばこ産業",
+    "1928": "積水ハウス", "8593": "三菱HCキャピタル", "1414": "ショーボンドHD", "197A": "タウンズ"
+}
 
 # --- 銘柄リスト保存・復元 ---
 def load_watchlist():
@@ -46,47 +60,33 @@ def save_watchlist(tickers):
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
 
-# --- 日本語企業名取得（株探エンジン：海外サーバー対応） ---
-@st.cache_data(ttl=86400 * 30)
+# --- 東証全銘柄マスター（JPX公式）の一括読み込み ---
+@st.cache_data(ttl=86400 * 7)
+def get_jpx_master_dict():
+    master = KNOWN_NAMES.copy()
+    try:
+        url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content = resp.read()
+            df_jpx = pd.read_excel(io.BytesIO(content))
+            # JPXエクセルからコードと銘柄名を抽出
+            code_col = [c for c in df_jpx.columns if "コード" in str(c)][0]
+            name_col = [c for c in df_jpx.columns if "銘柄名" in str(c)][0]
+            for _, row in df_jpx.iterrows():
+                c_str = str(row[code_col]).strip().upper()
+                n_str = str(row[name_col]).strip()
+                if c_str and n_str and n_str != "nan":
+                    master[c_str] = n_str
+    except:
+        pass
+    return master
+
+JPX_DICT = get_jpx_master_dict()
+
 def get_company_name_jp(code):
     clean_code = str(code).strip().upper()
-    
-    # 1. 株探から日本語社名を取得
-    try:
-        url = f"https://kabutan.jp/stock/?code={clean_code}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
-            }
-        )
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            match = re.search(r'<title>\s*(.*?)\s*【', html)
-            if match and match.group(1):
-                name = match.group(1).strip()
-                if name and "株探" not in name:
-                    return name
-    except:
-        pass
-
-    # 2. YahooファイナンスJPから取得（予備）
-    try:
-        url = f"https://finance.yahoo.co.jp/quote/{clean_code}.T"
-        req = urllib.request.Request(
-            url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        )
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            match = re.search(r'<title>\s*(.*?)\s*【', html)
-            if match and match.group(1):
-                return match.group(1).strip()
-    except:
-        pass
-
-    return clean_code
+    return JPX_DICT.get(clean_code, KNOWN_NAMES.get(clean_code, clean_code))
 
 # --- 8つのものさし詳細診断モーダル ---
 @st.dialog("📊 銘柄健全性・8つのものさし詳細診断", width="large")
