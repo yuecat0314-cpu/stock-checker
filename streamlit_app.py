@@ -12,25 +12,36 @@ WATCHLIST_FILE, NAMES_FILE = "watchlist.json", "company_names.json"
 JST = pytz.timezone('Asia/Tokyo')
 STATUS_OPTS = ["👀 監視中", "💼 保有中", "🎯 買いたい"]
 
-# テスト用に有名企業数社のみにスリム化
+# テスト＆実戦用の主要企業リスト
 INIT_DATA = {
     "7203": ("トヨタ自動車", "👀 監視中"),
     "8058": ("三菱商事", "👀 監視中"),
     "9432": ("NTT", "👀 監視中"),
     "8306": ("三菱UFJ FG", "👀 監視中"),
-    "2914": ("JT", "👀 監視中")
+    "2914": ("JT", "👀 監視中"),
+    "3660": ("アイスタイル", "👀 監視中"),
+    "3010": ("ポラリスHD", "👀 監視中")
 }
 
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
+# --- 配当データの正規化層（モグラ叩き廃止・厳格定義版） ---
 def get_dividend_data(info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, None
 
+    # 1. 会社予想年間配当の取得（勝手に水増ししない）
+    expected_d = 0.0
     d_rate = info_dict.get("dividendRate")
     t_rate = info_dict.get("trailingAnnualDividendRate")
-    
+
+    if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+        expected_d = float(d_rate)
+    elif t_rate and not pd.isna(t_rate) and float(t_rate) > 0:
+        expected_d = float(t_rate)
+
+    # 2. 過去の実績配当（直近完了年度）の算出（※予想の代用には絶対に使わない）
     hist_div_actual = 0.0
     if ticker_obj is not None:
         try:
@@ -44,17 +55,11 @@ def get_dividend_data(info_dict, cur_price, ticker_obj=None):
         except Exception:
             pass
 
-    expected_d = 0.0
+    # 3. 異常検知（予想が実績の3倍以上など不自然な乖離がある場合は警告）
     warn_msg = None
-
-    if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-        expected_d = float(d_rate)
-        if hist_div_actual > 0 and expected_d >= hist_div_actual * 2.5:
-            warn_msg = f"⚠️ 会社予想配当({expected_d:.1f}円)が直近実績({hist_div_actual:.1f}円)の超過乖離です。開示情報をご確認ください。"
-    elif t_rate and not pd.isna(t_rate) and float(t_rate) > 0:
-        expected_d = float(t_rate)
-    elif hist_div_actual > 0:
-        expected_d = hist_div_actual
+    if expected_d > 0 and hist_div_actual > 0:
+        if expected_d >= hist_div_actual * 3.0:
+            warn_msg = f"⚠️ 会社予想配当({expected_d:.1f}円)が直近実績({hist_div_actual:.1f}円)と大きく乖離しています。開示情報をご確認ください。"
 
     div_y = (expected_d / float(cur_price)) * 100 if expected_d > 0 else 0.0
     return div_y, expected_d, hist_div_actual, warn_msg
