@@ -6,14 +6,16 @@ import plotly.graph_objects as go
 import json
 import os
 import unicodedata
+from datetime import datetime
+import pytz
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="高配当株 監視＆8指標診断ダッシュボード", layout="wide", page_icon="📈")
 
 WATCHLIST_FILE = "watchlist.json"
 NAMES_FILE = "company_names.json"
+JST = pytz.timezone('Asia/Tokyo')
 
-# 初期銘柄データ
 INITIAL_DATA = {
     "8058": "三菱商事", "3355": "クリヤマHD", "9433": "KDDI", "2428": "ウェルネット",
     "4767": "TOW", "4845": "フュージョン", "2181": "パーソルHD", "1840": "土屋HD",
@@ -25,12 +27,10 @@ INITIAL_DATA = {
     "1928": "積水ハウス", "8593": "三菱HCキャピタル", "1414": "ショーボンドHD", "197A": "タウンズ"
 }
 
-# --- コードの正規化（全角→半角、大文字化、空白除去） ---
 def normalize_code(code):
     norm = unicodedata.normalize("NFKC", str(code))
     return norm.strip().upper()
 
-# --- JSONファイル読み込み・保存 ---
 def load_data():
     names = {normalize_code(k): v for k, v in INITIAL_DATA.items()}
     if os.path.exists(NAMES_FILE):
@@ -54,7 +54,6 @@ def load_data():
     return tickers, names
 
 def save_data(tickers, names):
-    # 重複を完全排除して保存
     clean_tickers = list(dict.fromkeys([normalize_code(c) for c in tickers]))
     st.session_state.watchlist = clean_tickers
     st.session_state.company_names = names
@@ -191,16 +190,18 @@ def show_detail_dialog(code, name):
             st.error(f"詳細データ取得エラー: {e}")
 
 # --- 高速バッチデータ取得 ---
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict):
     if not tickers:
-        return pd.DataFrame()
+        return pd.DataFrame(), ""
     
     clean_tickers = list(dict.fromkeys([normalize_code(t) for t in tickers]))
     symbols = [f"{t}.T" for t in clean_tickers]
     data = yf.download(symbols, period="1mo", interval="1d", group_by="ticker", progress=False)
     
+    now_str = datetime.now(JST).strftime("%H:%M:%S")
     rows = []
+    
     for code_str in clean_tickers:
         sym = f"{code_str}.T"
         jp_name = names_dict.get(code_str, code_str)
@@ -239,31 +240,32 @@ def fetch_watchlist_data(tickers, names_dict):
                 "1週間騰落": np.nan, "配当利回り": np.nan
             })
             
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), now_str
 
-# --- スタイル関数 ---
 def color_diff_cells(val):
     if pd.isna(val): return ''
     if val > 0: return 'color: #ff4d4f; font-weight: 700;'
     elif val < 0: return 'color: #1890ff; font-weight: 700;'
     return 'color: #8c8c8c;'
 
-# --- メイン画面 ---
-st.title("📈 高配当株 監視ダッシュボード")
-st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** （重複自動排除・永続保存）")
+# --- メイン画面ヘッダー ---
+c_title, c_refresh = st.columns([3, 1])
+with c_title:
+    st.title("📈 高配当株 監視ダッシュボード")
+with c_refresh:
+    st.write("")
+    if st.button("🔄 最新データ更新", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
 # 銘柄管理エリア
 with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / 削除）"):
     tab_add, tab_edit, tab_del = st.tabs(["➕ 銘柄を追加", "✏️ 銘柄名を編集・登録", "🗑️ 銘柄を削除"])
     
-    # 1. 追加（重複自動スキップ機能付き）
     with tab_add:
         c_add1, c_add2 = st.columns([3, 1])
         with c_add1:
-            new_input = st.text_input(
-                "銘柄コード（「コード:名前」またはカンマ区切りで一括追加）",
-                placeholder="例: 7466:SPK, 7822:アートネイチャー, 9193"
-            )
+            new_input = st.text_input("銘柄コード（「コード:名前」またはカンマ区切り）", placeholder="例: 7466:SPK, 7822:アートネイチャー, 9193")
         with c_add2:
             st.write("")
             st.write("")
@@ -273,34 +275,21 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
                     cur_w = list(st.session_state.watchlist)
                     cur_n = dict(st.session_state.company_names)
                     added_count = 0
-                    skipped_list = []
-
                     for it in items:
                         if ":" in it or "：" in it:
                             delimiter = ":" if ":" in it else "："
                             c, n = it.split(delimiter, 1)
                             c = normalize_code(c)
-                            n = n.strip()
-                            cur_n[c] = n
+                            cur_n[c] = n.strip()
                         else:
                             c = normalize_code(it)
-
                         if c not in cur_w:
                             cur_w.append(c)
                             added_count += 1
-                        else:
-                            skipped_list.append(c)
-
                     save_data(cur_w, cur_n)
                     st.cache_data.clear()
-                    
-                    if added_count > 0:
-                        st.toast(f"{added_count}件の銘柄を追加しました！", icon="✅")
-                    if skipped_list:
-                        st.toast(f"既に追加済みの銘柄（スキップ）: {', '.join(skipped_list)}", icon="ℹ️")
                     st.rerun()
 
-    # 2. 編集
     with tab_edit:
         c_ed1, c_ed2, c_ed3 = st.columns([1.5, 2, 1])
         with c_ed1:
@@ -323,7 +312,6 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
                 st.toast("企業名を保存しました！", icon="💾")
                 st.rerun()
 
-    # 3. 削除
     with tab_del:
         delete_targets = st.multiselect(
             "削除したい銘柄を選択してください（複数選択可）",
@@ -341,13 +329,12 @@ with st.expander("⚙️ 監視銘柄・企業名の管理（追加 / 編集 / �
                 st.rerun()
 
 # データ取得＆一覧表示
-with st.spinner("株価・騰落・配当利回りを一括更新中..."):
-    df_result = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names)
+with st.spinner("株価データを更新中..."):
+    df_result, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names)
+
+st.caption(f"登録件数: **{len(st.session_state.watchlist)} 銘柄** ｜ 取得時刻: **{update_time}** (※東証データは約20分ディレイ)")
 
 if not df_result.empty:
-    st.write("---")
-    st.subheader("📋 監視銘柄一覧")
-    
     styled_df = df_result.style.map(
         color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
     ).format({
