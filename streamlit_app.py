@@ -193,6 +193,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
                 div_y = raw_y * 100 if raw_y < 0.2 else raw_y
         except: pass
         rows.append({"状態": tags_dict.get(c, "👀 監視中"), "コード": c, "銘柄名": names_dict.get(c, c), "現在値": cur_p, "前日差": diff, "前日比": diff_pct, "1週": week_pct, "利回り": div_y, "ma25_dev": ma25_dev})
+
     return pd.DataFrame(rows), now_str
 
 def color_cells(v):
