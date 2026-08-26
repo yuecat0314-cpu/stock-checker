@@ -116,7 +116,7 @@ def show_detail_dialog(code, name, status, live_data=None):
             cashflow = t.cashflow
             hist = t.history(period="1y")
 
-            # === 1. 企業の健全性スコア（8つのものさし） ===
+            # 1. 企業の健全性スコア（8つのものさし）
             sales_score, sales_desc = 50, "データ不足"
             if not income.empty and "Total Revenue" in income.index:
                 rev = income.loc["Total Revenue"].dropna()[::-1]
@@ -186,29 +186,29 @@ def show_detail_dialog(code, name, status, live_data=None):
             health_score = int(np.mean(scores_health))
             health_rank = "S" if health_score >= 85 else ("A" if health_score >= 70 else ("B" if health_score >= 55 else "C"))
 
-            # === 2. 買い時スコア（割安度・過熱度・株価位置） ===
-            cur_p = live_data["現在値"] if (live_data and not pd.isna(live_data["現在値"])) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
-            div_y = live_data["配当利回り"] if (live_data and not pd.isna(live_data["配当利回り"])) else ((info.get("dividendYield", 0) or 0) * 100)
+            # 2. 買い時スコア（割安度・過熱度・株価位置）
+            cur_p = float(live_data["現在値"]) if (live_data is not None and not pd.isna(live_data["現在値"])) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
+            div_y = float(live_data["配当利回り"]) if (live_data is not None and not pd.isna(live_data["配当利回り"])) else ((info.get("dividendYield", 0) or 0) * 100)
 
-            # 25日移動平均乖離
+            # 25日乖離
             ma25_dev = 0
             buy_ma_score = 50
             if len(hist) >= 25:
                 ma25 = hist["Close"].rolling(25).mean().iloc[-1]
                 ma25_dev = ((cur_p - ma25) / ma25) * 100
-                if ma25_dev <= -5.0: buy_ma_score = 100  # 絶好の押し目
+                if ma25_dev <= -5.0: buy_ma_score = 100
                 elif ma25_dev <= -2.0: buy_ma_score = 85
                 elif ma25_dev <= 2.0: buy_ma_score = 65
                 elif ma25_dev <= 6.0: buy_ma_score = 45
-                else: buy_ma_score = 20  # 過熱
+                else: buy_ma_score = 20
 
             # 52週高値からの下落率
             high_52w = hist["Close"].max() if not hist.empty else cur_p
             drop_from_high = ((cur_p - high_52w) / high_52w) * 100 if high_52w > 0 else 0
             if -25 <= drop_from_high <= -10: buy_pos_score = 100
             elif -35 <= drop_from_high < -25 or -10 < drop_from_high <= -5: buy_pos_score = 75
-            elif drop_from_high > -5: buy_pos_score = 45  # 高値圏
-            else: buy_pos_score = 30  # 底なし急落
+            elif drop_from_high > -5: buy_pos_score = 45
+            else: buy_pos_score = 30
 
             # 利回り水準
             if div_y >= 4.5: buy_div_score = 100
@@ -217,17 +217,13 @@ def show_detail_dialog(code, name, status, live_data=None):
             elif div_y >= 3.0: buy_div_score = 45
             else: buy_div_score = 25
 
-            # PBR水準
             pbr_val = info.get("priceToBook", 1.5) or 1.5
-            if pbr_val <= 0.8: buy_pbr_score = 100
-            elif pbr_val <= 1.0: buy_pbr_score = 85
-            elif pbr_val <= 1.5: buy_pbr_score = 60
-            else: buy_pbr_score = 35
+            buy_pbr_score = 100 if pbr_val <= 0.8 else (85 if pbr_val <= 1.0 else (60 if pbr_val <= 1.5 else 35))
 
             buy_score = int(buy_ma_score * 0.35 + buy_pos_score * 0.25 + buy_div_score * 0.25 + buy_pbr_score * 0.15)
             buy_rank = "S" if buy_score >= 80 else ("A" if buy_score >= 65 else ("B" if buy_score >= 50 else "C"))
 
-            # 総合結論メッセージ
+            # 総合判定
             if health_score >= 70 and buy_score >= 65:
                 verdict_box = ("success", "★【絶好の買い場】企業体力・収益性が高く、株価も魅力的な水準（押し目・高利回り）です。")
             elif health_score >= 70 and buy_score < 50:
@@ -237,7 +233,6 @@ def show_detail_dialog(code, name, status, live_data=None):
             else:
                 verdict_box = ("secondary", "👀【通常監視】標準的な水準です。決算発表や全体相場の急変を監視してください。")
 
-            # === モーダル内表示 ===
             c_h1, c_b1 = st.columns(2)
             with c_h1:
                 st.metric(label="🏋️ 企業の健全性", value=f"{health_score} 点", delta=f"RANK {health_rank}")
@@ -271,7 +266,7 @@ def show_detail_dialog(code, name, status, live_data=None):
         except Exception as e:
             st.error(f"詳細データ取得エラー: {e}")
 
-# --- 高速バッチデータ取得（市場クローズ後でも安定動作） ---
+# --- 高速バッチデータ取得 ---
 @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers:
@@ -279,7 +274,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
     
     clean_tickers = list(dict.fromkeys([normalize_code(t) for t in tickers]))
     symbols = [f"{t}.T" for t in clean_tickers]
-    data = yf.download(symbols, period="2mo", interval="1d", group_by="ticker", progress=False)
+    data = yf.download(symbols, period="1mo", interval="1d", progress=False)
     
     now_str = datetime.now(JST).strftime("%H:%M:%S")
     rows = []
@@ -289,46 +284,49 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
         jp_name = names_dict.get(code_str, code_str)
         tag_val = tags_dict.get(code_str, "👀 監視中")
         try:
-            df = data[sym] if len(clean_tickers) > 1 else data
-            df = df.dropna(subset=["Close"]) if "Close" in df.columns else df.dropna()
-            
-            if len(df) < 2:
-                # 単独銘柄取得フォールバック
-                single = yf.Ticker(sym).history(period="1mo")
-                if len(single) >= 2: df = single
+            # MultiIndexからの確実な抽出
+            if isinstance(data.columns, pd.MultiIndex):
+                if "Close" in data.columns.get_level_values(0) and sym in data["Close"].columns:
+                    closes = data["Close"][sym].dropna()
+                elif sym in data.columns.get_level_values(0):
+                    closes = data[sym]["Close"].dropna()
                 else:
-                    rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0})
-                    continue
-            
-            cur_price = float(df["Close"].iloc[-1])
-            prev_price = float(df["Close"].iloc[-2])
-            diff = cur_price - prev_price
-            diff_pct = (diff / prev_price) * 100
-            
-            week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
-            week_pct = ((cur_price - week_price) / week_price) * 100
+                    closes = pd.Series(dtype=float)
+            else:
+                closes = data["Close"].dropna() if "Close" in data.columns else pd.Series(dtype=float)
 
-            # 25日乖離
-            ma25_dev = 0
-            if len(df) >= 25:
-                ma25 = df["Close"].rolling(25).mean().iloc[-1]
+            if len(closes) < 2:
+                t_single = yf.Ticker(sym).history(period="1mo")
+                if not t_single.empty and "Close" in t_single.columns:
+                    closes = t_single["Close"].dropna()
+
+            if len(closes) >= 2:
+                cur_price = float(closes.iloc[-1])
+                prev_price = float(closes.iloc[-2])
+                diff = cur_price - prev_price
+                diff_pct = (diff / prev_price) * 100
+                
+                week_price = float(closes.iloc[-6]) if len(closes) >= 6 else float(closes.iloc[0])
+                week_pct = ((cur_price - week_price) / week_price) * 100
+
+                ma25 = closes.mean() if len(closes) > 0 else cur_price
                 ma25_dev = ((cur_price - ma25) / ma25) * 100
 
-            info = yf.Ticker(sym).info
-            raw_yield = info.get("dividendYield", 0) or 0
-            div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
+                info = yf.Ticker(sym).info
+                raw_yield = info.get("dividendYield", 0) or 0
+                div_yield = raw_yield * 100 if raw_yield < 1 else raw_yield
 
-            rows.append({
-                "状態": tag_val,
-                "コード": code_str,
-                "銘柄名": jp_name,
-                "現在値": cur_price,
-                "前日差": diff,
-                "前日比(%)": diff_pct,
-                "1週間騰落": week_pct,
-                "配当利回り": div_yield,
-                "ma25_dev": ma25_dev
-            })
+                rows.append({
+                    "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
+                    "現在値": cur_price, "前日差": diff, "前日比(%)": diff_pct,
+                    "1週間騰落": week_pct, "配当利回り": div_yield, "ma25_dev": ma25_dev
+                })
+            else:
+                rows.append({
+                    "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
+                    "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
+                    "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0
+                })
         except:
             rows.append({
                 "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
@@ -343,6 +341,21 @@ def color_diff_cells(val):
     if val > 0: return 'color: #ff4d4f; font-weight: 700;'
     elif val < 0: return 'color: #1890ff; font-weight: 700;'
     return 'color: #8c8c8c;'
+
+def safe_style_df(df_sub, display_cols):
+    styler = df_sub[display_cols].style
+    # mapとapplymapの両バージョンに互換対応
+    if hasattr(styler, 'map'):
+        styler = styler.map(color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落'])
+    elif hasattr(styler, 'applymap'):
+        styler = styler.applymap(color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落'])
+    return styler.format({
+        '現在値': '{:,.1f} 円',
+        '前日差': '{:+,.1f} 円',
+        '前日比(%)': '{:+.2f}%',
+        '1週間騰落': '{:+.2f}%',
+        '配当利回り': '{:.2f}%'
+    }, na_rep='-')
 
 # --- メイン画面ヘッダー ---
 c_title, c_refresh = st.columns([3, 1])
@@ -426,24 +439,4 @@ with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / �
         if st.button("選択した銘柄を一括削除", type="secondary", use_container_width=True):
             if delete_targets:
                 norm_targets = [normalize_code(c) for c in delete_targets]
-                cur_w = [c for c in st.session_state.watchlist if c not in norm_targets]
-                save_data(cur_w, dict(st.session_state.company_names), dict(st.session_state.company_tags))
-                st.cache_data.clear()
-                st.toast("選択した銘柄を削除しました！", icon="🗑️")
-                st.rerun()
-
-# データ取得
-with st.spinner("株価データを更新中..."):
-    df_all, update_time = fetch_watchlist_data(
-        st.session_state.watchlist,
-        st.session_state.company_names,
-        st.session_state.company_tags
-    )
-
-st.caption(f"登録総数: **{len(st.session_state.watchlist)} 銘柄** ｜ 取得時刻: **{update_time}** (※東証データは約20分ディレイ)")
-
-# --- 🚨 今日見るべき注目シグナル（自動ピックアップ） ---
-if not df_all.empty and df_all["現在値"].notna().any():
-    signals = []
     
-    #
