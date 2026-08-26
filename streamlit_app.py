@@ -235,7 +235,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             elif health_score < 55 and buy_score >= 65:
                 verdict_box = ("warning", "⚠️【罠銘柄リスク】利回りや割安度は高いですが、業績・財務に懸念があります。減配リスクに注意してください。")
             else:
-                verdict_box = ("secondary", "👀【通常監視】標準的な水準です。決算発表や全体相場の急変を監視してください。")
+                verdict_box = ("info", "👀【通常監視】標準的な水準です。決算発表や全体相場の急変を監視してください。")
 
             c_h1, c_b1 = st.columns(2)
             with c_h1:
@@ -245,7 +245,6 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
 
             if verdict_box[0] == "success": st.success(verdict_box[1])
             elif verdict_box[0] == "warning": st.warning(verdict_box[1])
-            elif verdict_box[0] == "info": st.info(verdict_box[1])
             else: st.info(verdict_box[1])
 
             st.markdown(f"""
@@ -270,7 +269,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
         except Exception as e:
             st.error(f"詳細データ取得エラー: {e}")
 
-# --- 高速バッチデータ取得（確実に動く安定版） ---
+# --- 高速バッチデータ取得（3ヶ月データで本物の25日乖離を計算） ---
 @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers:
@@ -278,7 +277,9 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
     
     clean_tickers = list(dict.fromkeys([normalize_code(t) for t in tickers]))
     symbols = [f"{t}.T" for t in clean_tickers]
-    data = yf.download(symbols, period="1mo", interval="1d", group_by="ticker", progress=False)
+    
+    # 25営業日MAを計算するために3ヶ月（3mo）を取得
+    data = yf.download(symbols, period="3mo", interval="1d", group_by="ticker", progress=False)
     
     now_str = datetime.now(JST).strftime("%H:%M:%S")
     rows = []
@@ -291,7 +292,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
             df = data[sym] if len(clean_tickers) > 1 else data
             df = df.dropna(how="all")
             if len(df) < 2:
-                rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0})
+                rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "利回り": np.nan, "ma25_dev": 0})
                 continue
             
             cur_price = float(df["Close"].iloc[-1])
@@ -302,8 +303,13 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
             week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
             week_pct = ((cur_price - week_price) / week_price) * 100
 
-            ma25 = float(df["Close"].mean()) if len(df) > 0 else cur_price
-            ma25_dev = ((cur_price - ma25) / ma25) * 100
+            # 本物の25営業日移動平均線乖離率
+            if len(df) >= 25:
+                ma25 = float(df["Close"].rolling(25).mean().iloc[-1])
+                ma25_dev = ((cur_price - ma25) / ma25) * 100
+            else:
+                ma25 = float(df["Close"].mean())
+                ma25_dev = ((cur_price - ma25) / ma25) * 100
 
             info = yf.Ticker(sym).info
             raw_yield = info.get("dividendYield", 0) or 0
@@ -311,14 +317,14 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
 
             rows.append({
                 "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
-                "現在値": cur_price, "前日差": diff, "前日比(%)": diff_pct,
-                "1週間騰落": week_pct, "配当利回り": div_yield, "ma25_dev": ma25_dev
+                "現在値": cur_price, "前日差": diff, "前日比": diff_pct,
+                "1週": week_pct, "利回り": div_yield, "ma25_dev": ma25_dev
             })
         except:
             rows.append({
                 "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
-                "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
-                "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0
+                "現在値": np.nan, "前日差": np.nan, "前日比": np.nan,
+                "1週": np.nan, "利回り": np.nan, "ma25_dev": 0
             })
             
     return pd.DataFrame(rows), now_str
@@ -432,16 +438,12 @@ if not df_all.empty:
     valid_df = df_all.dropna(subset=["現在値"])
     signals = []
     
-    # 1. 押し目候補（25日乖離 -2.5%以下 または 前日比 -1.5%以下）
-    dip_df = valid_df[(valid_df["ma25_dev"] <= -2.5) | (valid_df["前日比(%)"] <= -1.5)]
+    # 1. 押し目候補（25日乖離 -3.0%以下 または 前日比 -2.0%以下）
+    dip_df = valid_df[(valid_df["ma25_dev"] <= -3.0) | (valid_df["前日比"] <= -2.0)]
     for _, r in dip_df.iterrows():
-        signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['ma25_dev']:+.1f}%`, 利回り `{r['配当利回り']:.2f}%`")
+        signals.append(f"🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['ma25_dev']:+.1f}%`, 利回り `{r['利回り']:.2f}%`")
 
     # 2. 高利回り突入（利回り 5.0%以上）
-    yield_df = valid_df[valid_df["配当利回り"] >= 5.0]
+    yield_df = valid_df[valid_df["利回り"] >= 5.0]
     for _, r in yield_df.iterrows():
-        signals.append(f"💰 **【高利回り突入】** {r['銘柄名']} ({r['コード']}): 利回り `{r['配当利回り']:.2f}%`")
-
-    # 3. 過熱注意（1週間 +8%以上）
-    hot_df = valid_df[valid_df["1週間騰落"] >= 8.0]
-  
+        signals.append(f"💰 **【高利回り
