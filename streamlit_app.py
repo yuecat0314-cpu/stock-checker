@@ -45,14 +45,11 @@ def normalize_code(code):
 def load_data():
     names = {}
     tags = {}
-
-    # 初期設定
     for k, (n, t) in INITIAL_DATA.items():
         c = normalize_code(k)
         names[c] = n
         tags[c] = t
 
-    # 企業名ファイル読み込み
     if os.path.exists(NAMES_FILE):
         try:
             with open(NAMES_FILE, "r", encoding="utf-8") as f:
@@ -62,7 +59,6 @@ def load_data():
         except:
             pass
 
-    # 監視リストファイル読み込み（旧形式のリスト形式・新形式の辞書形式の両方に対応）
     tickers = list(names.keys())
     if os.path.exists(WATCHLIST_FILE):
         try:
@@ -81,8 +77,7 @@ def load_data():
 
     clean_tickers = list(dict.fromkeys([normalize_code(c) for c in tickers]))
     for c in clean_tickers:
-        if c not in tags:
-            tags[c] = "👀 監視中"
+        if c not in tags: tags[c] = "👀 監視中"
 
     return clean_tickers, names, tags
 
@@ -92,7 +87,6 @@ def save_data(tickers, names, tags):
     st.session_state.company_names = names
     st.session_state.company_tags = tags
     try:
-        # watchlist.json にタグ情報も紐付けて保存
         tag_dict = {c: tags.get(c, "👀 監視中") for c in clean_tickers}
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
             json.dump(tag_dict, f, ensure_ascii=False, indent=2)
@@ -107,32 +101,31 @@ if "watchlist" not in st.session_state or "company_tags" not in st.session_state
     st.session_state.company_names = n
     st.session_state.company_tags = t
 
-# --- 8つのものさし詳細診断モーダル ---
-@st.dialog("📊 銘柄健全性・8つのものさし詳細診断", width="large")
-def show_detail_dialog(code, name, status):
+# --- 8つのものさし ＆ 買い時詳細診断モーダル ---
+@st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時）", width="large")
+def show_detail_dialog(code, name, status, live_data=None):
     ticker_symbol = f"{normalize_code(code)}.T"
     st.caption(f"対象銘柄: **{name}** ({ticker_symbol}) ｜ 状態: **{status}**")
     
-    with st.spinner("詳細な財務諸表と配当データを取得中..."):
+    with st.spinner("財務データおよびテクニカル指標を解析中..."):
         try:
             t = yf.Ticker(ticker_symbol)
             info = t.info
             income = t.financials
             balance = t.balance_sheet
             cashflow = t.cashflow
+            hist = t.history(period="1y")
 
-            # 1. 売上高成長
-            sales_growth_score = 50
-            sales_desc = "データ不足"
+            # === 1. 企業の健全性スコア（8つのものさし） ===
+            sales_score, sales_desc = 50, "データ不足"
             if not income.empty and "Total Revenue" in income.index:
                 rev = income.loc["Total Revenue"].dropna()[::-1]
                 if len(rev) >= 2:
                     yoy = ((rev.iloc[-1] / rev.iloc[0]) ** (1 / (len(rev)-1)) - 1) * 100
-                    if yoy >= 3.0: sales_growth_score, sales_desc = 100, f"◎ 年平均+{yoy:.1f}%成長"
-                    elif yoy > 0: sales_growth_score, sales_desc = 80, f"○ 緩やかに成長 (+{yoy:.1f}%)"
-                    else: sales_growth_score, sales_desc = 30, f"✕ 縮小傾向 ({yoy:.1f}%)"
+                    if yoy >= 3.0: sales_score, sales_desc = 100, f"◎ 年平均+{yoy:.1f}%成長"
+                    elif yoy > 0: sales_score, sales_desc = 80, f"○ 緩やかに成長 (+{yoy:.1f}%)"
+                    else: sales_score, sales_desc = 30, f"✕ 縮小傾向 ({yoy:.1f}%)"
 
-            # 2. 営業利益率
             raw_margin = info.get("operatingMargins", 0) or 0
             op_margin = raw_margin * 100 if raw_margin < 1 else raw_margin
             if op_margin >= 15: op_score = 100
@@ -140,9 +133,7 @@ def show_detail_dialog(code, name, status):
             elif op_margin >= 5: op_score = 65
             else: op_score = 30
 
-            # 3. 純利益推移
-            eps_score = 50
-            eps_desc = "データ不足"
+            eps_score, eps_desc = 50, "データ不足"
             if not income.empty and "Net Income" in income.index:
                 ni = income.loc["Net Income"].dropna()[::-1]
                 if len(ni) >= 2:
@@ -150,16 +141,12 @@ def show_detail_dialog(code, name, status):
                     elif (ni > 0).all(): eps_score, eps_desc = 75, "○ 安定黒字維持"
                     else: eps_score, eps_desc = 35, "✕ 利益減少または赤字"
 
-            # 4. 純利益安定性
-            profit_score = 50
-            profit_desc = "データ不足"
+            profit_score, profit_desc = 50, "データ不足"
             if not income.empty and "Net Income" in income.index:
                 net_incomes = income.loc["Net Income"].dropna()
                 profit_score, profit_desc = (100, "◎ 連続黒字") if (net_incomes > 0).all() else (25, "✕ 直近で赤字あり")
 
-            # 5. 配当継続力
-            div_score = 60
-            div_desc = "安定配当"
+            div_score, div_desc = 60, "安定配当"
             if not cashflow.empty and "Cash Dividends Paid" in cashflow.index:
                 div_paid = cashflow.loc["Cash Dividends Paid"].dropna().abs()[::-1]
                 if len(div_paid) >= 2:
@@ -169,7 +156,6 @@ def show_detail_dialog(code, name, status):
                     else:
                         div_score, div_desc = 50, "△ 配当総額の波あり"
 
-            # 6. 配当性向
             raw_payout = info.get("payoutRatio", 0) or 0
             payout_ratio = raw_payout * 100 if raw_payout < 1 else raw_payout
             if 30 <= payout_ratio <= 50: payout_score = 100
@@ -178,7 +164,6 @@ def show_detail_dialog(code, name, status):
             elif payout_ratio > 80: payout_score = 25
             else: payout_score = 60
 
-            # 7. 自己資本比率
             equity_ratio = 0
             eq_score = 50
             if not balance.empty and "Stockholders Equity" in balance.index and "Total Assets" in balance.index:
@@ -191,42 +176,102 @@ def show_detail_dialog(code, name, status):
                     elif equity_ratio >= 20: eq_score = 60
                     else: eq_score = 30
 
-            # 8. 利益剰余金
-            retained_score = 60
-            retained_desc = "安定"
+            retained_score, retained_desc = 60, "安定"
             if not balance.empty and "Retained Earnings" in balance.index:
                 re = balance.loc["Retained Earnings"].dropna()[::-1]
                 if len(re) >= 2:
                     retained_score, retained_desc = (100, "◎ 潤沢に蓄積中") if re.iloc[-1] > re.iloc[0] else (40, "△ 横ばい/減少")
 
-            scores = [sales_growth_score, op_score, eps_score, profit_score, div_score, payout_score, eq_score, retained_score]
-            total_score = int(np.mean(scores))
-            rank = "S" if total_score >= 85 else ("A" if total_score >= 70 else ("B" if total_score >= 55 else "C"))
+            scores_health = [sales_score, op_score, eps_score, profit_score, div_score, payout_score, eq_score, retained_score]
+            health_score = int(np.mean(scores_health))
+            health_rank = "S" if health_score >= 85 else ("A" if health_score >= 70 else ("B" if health_score >= 55 else "C"))
 
-            c_score1, c_score2 = st.columns([1, 1])
-            with c_score1:
-                st.metric(label="総合健全性スコア", value=f"{total_score} 点", delta=f"RANK {rank}")
-                st.markdown(f"""
-                - **営業利益率**: `{op_margin:.1f}%`
-                - **配当性向**: `{payout_ratio:.1f}%`
-                - **自己資本比率**: `{equity_ratio:.1f}%`
-                """)
-            with c_score2:
+            # === 2. 買い時スコア（割安度・過熱度・株価位置） ===
+            cur_p = live_data["現在値"] if (live_data and not pd.isna(live_data["現在値"])) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
+            div_y = live_data["配当利回り"] if (live_data and not pd.isna(live_data["配当利回り"])) else ((info.get("dividendYield", 0) or 0) * 100)
+
+            # 25日移動平均乖離
+            ma25_dev = 0
+            buy_ma_score = 50
+            if len(hist) >= 25:
+                ma25 = hist["Close"].rolling(25).mean().iloc[-1]
+                ma25_dev = ((cur_p - ma25) / ma25) * 100
+                if ma25_dev <= -5.0: buy_ma_score = 100  # 絶好の押し目
+                elif ma25_dev <= -2.0: buy_ma_score = 85
+                elif ma25_dev <= 2.0: buy_ma_score = 65
+                elif ma25_dev <= 6.0: buy_ma_score = 45
+                else: buy_ma_score = 20  # 過熱
+
+            # 52週高値からの下落率
+            high_52w = hist["Close"].max() if not hist.empty else cur_p
+            drop_from_high = ((cur_p - high_52w) / high_52w) * 100 if high_52w > 0 else 0
+            if -25 <= drop_from_high <= -10: buy_pos_score = 100
+            elif -35 <= drop_from_high < -25 or -10 < drop_from_high <= -5: buy_pos_score = 75
+            elif drop_from_high > -5: buy_pos_score = 45  # 高値圏
+            else: buy_pos_score = 30  # 底なし急落
+
+            # 利回り水準
+            if div_y >= 4.5: buy_div_score = 100
+            elif div_y >= 4.0: buy_div_score = 85
+            elif div_y >= 3.5: buy_div_score = 65
+            elif div_y >= 3.0: buy_div_score = 45
+            else: buy_div_score = 25
+
+            # PBR水準
+            pbr_val = info.get("priceToBook", 1.5) or 1.5
+            if pbr_val <= 0.8: buy_pbr_score = 100
+            elif pbr_val <= 1.0: buy_pbr_score = 85
+            elif pbr_val <= 1.5: buy_pbr_score = 60
+            else: buy_pbr_score = 35
+
+            buy_score = int(buy_ma_score * 0.35 + buy_pos_score * 0.25 + buy_div_score * 0.25 + buy_pbr_score * 0.15)
+            buy_rank = "S" if buy_score >= 80 else ("A" if buy_score >= 65 else ("B" if buy_score >= 50 else "C"))
+
+            # 総合結論メッセージ
+            if health_score >= 70 and buy_score >= 65:
+                verdict_box = ("success", "★【絶好の買い場】企業体力・収益性が高く、株価も魅力的な水準（押し目・高利回り）です。")
+            elif health_score >= 70 and buy_score < 50:
+                verdict_box = ("info", "✋【待ち・高値圏】非常に優良な企業ですが、現在は株価がやや高値圏です。急落待ちを推奨します。")
+            elif health_score < 55 and buy_score >= 65:
+                verdict_box = ("warning", "⚠️【罠銘柄リスク】利回りや割安度は高いですが、業績・財務に懸念があります。減配リスクに注意してください。")
+            else:
+                verdict_box = ("secondary", "👀【通常監視】標準的な水準です。決算発表や全体相場の急変を監視してください。")
+
+            # === モーダル内表示 ===
+            c_h1, c_b1 = st.columns(2)
+            with c_h1:
+                st.metric(label="🏋️ 企業の健全性", value=f"{health_score} 点", delta=f"RANK {health_rank}")
+            with c_b1:
+                st.metric(label="🎯 現在の買い時", value=f"{buy_score} 点", delta=f"RANK {buy_rank}")
+
+            if verdict_box[0] == "success": st.success(verdict_box[1])
+            elif verdict_box[0] == "warning": st.warning(verdict_box[1])
+            elif verdict_box[0] == "info": st.info(verdict_box[1])
+            else: st.write(f"> {verdict_box[1]}")
+
+            st.markdown(f"""
+            - **現在値**: `{cur_p:,.1f} 円` ｜ **予想利回り**: `{div_y:.2f}%` ｜ **PBR**: `{pbr_val:.2f} 倍`
+            - **25日移動平均乖離率**: `{ma25_dev:+.2f}%` ｜ **52週高値からの下落率**: `{drop_from_high:+.2f}%`
+            """)
+
+            st.divider()
+            c_r1, c_r2 = st.columns([1, 1])
+            with c_r1:
                 cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
                 fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(r=scores + [scores[0]], theta=cats + [cats[0]], fill='toself', fillcolor='rgba(14, 165, 233, 0.25)', line=dict(color='#0284c7', width=2)))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, height=220, margin=dict(l=20, r=20, t=10, b=10))
+                fig.add_trace(go.Scatterpolar(r=scores_health + [scores_health[0]], theta=cats + [cats[0]], fill='toself', fillcolor='rgba(14, 165, 233, 0.25)', line=dict(color='#0284c7', width=2)))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, height=200, margin=dict(l=10, r=10, t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
-
-            st.dataframe(pd.DataFrame({
-                "指標項目": cats, "スコア": scores,
-                "判定": [sales_desc, f"{op_margin:.1f}%", eps_desc, profit_desc, div_desc, f"{payout_ratio:.1f}%", f"{equity_ratio:.1f}%", retained_desc]
-            }), use_container_width=True, hide_index=True)
+            with c_r2:
+                st.dataframe(pd.DataFrame({
+                    "指標項目": cats, "スコア": scores_health,
+                    "判定": [sales_desc, f"{op_margin:.1f}%", eps_desc, profit_desc, div_desc, f"{payout_ratio:.1f}%", f"{equity_ratio:.1f}%", retained_desc]
+                }), use_container_width=True, hide_index=True)
 
         except Exception as e:
             st.error(f"詳細データ取得エラー: {e}")
 
-# --- 高速バッチデータ取得 ---
+# --- 高速バッチデータ取得（市場クローズ後でも安定動作） ---
 @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers:
@@ -234,7 +279,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
     
     clean_tickers = list(dict.fromkeys([normalize_code(t) for t in tickers]))
     symbols = [f"{t}.T" for t in clean_tickers]
-    data = yf.download(symbols, period="1mo", interval="1d", group_by="ticker", progress=False)
+    data = yf.download(symbols, period="2mo", interval="1d", group_by="ticker", progress=False)
     
     now_str = datetime.now(JST).strftime("%H:%M:%S")
     rows = []
@@ -245,10 +290,15 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
         tag_val = tags_dict.get(code_str, "👀 監視中")
         try:
             df = data[sym] if len(clean_tickers) > 1 else data
-            df = df.dropna(how="all")
+            df = df.dropna(subset=["Close"]) if "Close" in df.columns else df.dropna()
+            
             if len(df) < 2:
-                rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan})
-                continue
+                # 単独銘柄取得フォールバック
+                single = yf.Ticker(sym).history(period="1mo")
+                if len(single) >= 2: df = single
+                else:
+                    rows.append({"状態": tag_val, "コード": code_str, "銘柄名": jp_name, "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan, "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0})
+                    continue
             
             cur_price = float(df["Close"].iloc[-1])
             prev_price = float(df["Close"].iloc[-2])
@@ -257,6 +307,12 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
             
             week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
             week_pct = ((cur_price - week_price) / week_price) * 100
+
+            # 25日乖離
+            ma25_dev = 0
+            if len(df) >= 25:
+                ma25 = df["Close"].rolling(25).mean().iloc[-1]
+                ma25_dev = ((cur_price - ma25) / ma25) * 100
 
             info = yf.Ticker(sym).info
             raw_yield = info.get("dividendYield", 0) or 0
@@ -270,13 +326,14 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
                 "前日差": diff,
                 "前日比(%)": diff_pct,
                 "1週間騰落": week_pct,
-                "配当利回り": div_yield
+                "配当利回り": div_yield,
+                "ma25_dev": ma25_dev
             })
         except:
             rows.append({
                 "状態": tag_val, "コード": code_str, "銘柄名": jp_name,
                 "現在値": np.nan, "前日差": np.nan, "前日比(%)": np.nan,
-                "1週間騰落": np.nan, "配当利回り": np.nan
+                "1週間騰落": np.nan, "配当利回り": np.nan, "ma25_dev": 0
             })
             
     return pd.DataFrame(rows), now_str
@@ -301,7 +358,6 @@ with c_refresh:
 with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / 編集 / 削除）"):
     tab_add, tab_edit, tab_del = st.tabs(["➕ 銘柄を追加", "✏️ 名前・状態（タグ）を変更", "🗑️ 銘柄を削除"])
     
-    # 1. 追加
     with tab_add:
         c_add1, c_add2, c_add3 = st.columns([2.5, 1.2, 1])
         with c_add1:
@@ -317,7 +373,6 @@ with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / �
                     cur_w = list(st.session_state.watchlist)
                     cur_n = dict(st.session_state.company_names)
                     cur_t = dict(st.session_state.company_tags)
-                    added_count = 0
                     for it in items:
                         if ":" in it or "：" in it:
                             delimiter = ":" if ":" in it else "："
@@ -327,14 +382,11 @@ with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / �
                         else:
                             c = normalize_code(it)
                         cur_t[c] = new_status
-                        if c not in cur_w:
-                            cur_w.append(c)
-                            added_count += 1
+                        if c not in cur_w: cur_w.append(c)
                     save_data(cur_w, cur_n, cur_t)
                     st.cache_data.clear()
                     st.rerun()
 
-    # 2. 編集（名前 ＋ 状態タグ変更）
     with tab_edit:
         c_ed1, c_ed2, c_ed3, c_ed4 = st.columns([1.5, 1.5, 1.2, 1])
         with c_ed1:
@@ -364,7 +416,6 @@ with st.expander("⚙️ 監視銘柄・企業名・状態の管理（追加 / �
                 st.toast("設定を保存しました！", icon="💾")
                 st.rerun()
 
-    # 3. 削除
     with tab_del:
         delete_targets = st.multiselect(
             "削除したい銘柄を選択してください（複数選択可）",
@@ -391,59 +442,8 @@ with st.spinner("株価データを更新中..."):
 
 st.caption(f"登録総数: **{len(st.session_state.watchlist)} 銘柄** ｜ 取得時刻: **{update_time}** (※東証データは約20分ディレイ)")
 
-# --- タブ切替表示 ---
-if not df_all.empty:
-    count_all = len(df_all)
-    count_hold = len(df_all[df_all["状態"] == "💼 保有中"])
-    count_buy = len(df_all[df_all["状態"] == "🎯 買いたい"])
-    count_watch = len(df_all[df_all["状態"] == "👀 監視中"])
-
-    tab_v_all, tab_v_hold, tab_v_buy, tab_v_watch = st.tabs([
-        f"すべて ({count_all})",
-        f"💼 保有中 ({count_hold})",
-        f"🎯 買いたい ({count_buy})",
-        f"👀 監視中 ({count_watch})"
-    ])
-
-    def render_stock_table(df_subset, tab_key):
-        if df_subset.empty:
-            st.info("該当する銘柄がありません。「⚙️ 管理エリア」から状態を設定してください。")
-            return
-
-        styled = df_subset.style.map(
-            color_diff_cells, subset=['前日差', '前日比(%)', '1週間騰落']
-        ).format({
-            '現在値': '{:,.1f} 円',
-            '前日差': '{:+,.1f} 円',
-            '前日比(%)': '{:+.2f}%',
-            '1週間騰落': '{:+.2f}%',
-            '配当利回り': '{:.2f}%'
-        }, na_rep='-')
-
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-
-        st.write("---")
-        c_sel, c_diag = st.columns([3, 1])
-        with c_sel:
-            t_code = st.selectbox(
-                "診断する銘柄を選択",
-                options=df_subset["コード"].tolist(),
-                format_func=lambda c: f"{c} - {df_subset.loc[df_subset['コード']==c, '銘柄名'].values[0]} ({df_subset.loc[df_subset['コード']==c, '状態'].values[0]})",
-                key=f"sel_{tab_key}"
-            )
-        with c_diag:
-            st.write("")
-            st.write("")
-            if st.button("🚀 8指標を診断", type="primary", use_container_width=True, key=f"btn_{tab_key}"):
-                t_name = df_subset.loc[df_subset['コード']==t_code, '銘柄名'].values[0]
-                t_stat = df_subset.loc[df_subset['コード']==t_code, '状態'].values[0]
-                show_detail_dialog(t_code, t_name, t_stat)
-
-    with tab_v_all:
-        render_stock_table(df_all, "all")
-    with tab_v_hold:
-        render_stock_table(df_all[df_all["状態"] == "💼 保有中"], "hold")
-    with tab_v_buy:
-        render_stock_table(df_all[df_all["状態"] == "🎯 買いたい"], "buy")
-    with tab_v_watch:
-        render_stock_table(df_all[df_all["状態"] == "👀 監視中"], "watch")
+# --- 🚨 今日見るべき注目シグナル（自動ピックアップ） ---
+if not df_all.empty and df_all["現在値"].notna().any():
+    signals = []
+    
+    #
