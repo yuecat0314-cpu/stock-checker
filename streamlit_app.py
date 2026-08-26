@@ -328,7 +328,6 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
         except Exception as e:
             st.error(f"詳細診断エラー: {e}")
 
-# セッションステートで株価データを保持し、削除時の無駄な再取得（ロード）を完全になくす爆速設計
 if "cached_price_df" not in st.session_state:
     st.session_state.cached_price_df = pd.DataFrame()
 
@@ -382,8 +381,8 @@ if c_r.button("🔄 最新データ更新", use_container_width=True):
         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
     st.rerun()
 
-with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"):
-    t_add, t_div, t_del = st.tabs(["➕ 追加", "💰 配当手動固定", "🗑️ 削除"])
+with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除 / 配当手動固定）"):
+    t_add, t_edit, t_div, t_del = st.tabs(["➕ 追加", "✏️ 編集", "💰 配当手動固定", "🗑️ 削除"])
     with t_add:
         in_code = st.text_input("コード（例: 8058:三菱商事, 9432）")
         if st.button("追加する", type="primary"):
@@ -393,22 +392,29 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     if not it.strip(): continue
                     parts = it.split(":", 1) if ":" in it else (it.split("：", 1) if "：" in it else (it, ""))
                     c = norm_c(parts[0])
-                    n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
-                    
-                    if not n_input:
-                        try:
-                            t_info = yf.Ticker(f"{c}.T").info
-                            n_input = t_info.get("longName") or t_info.get("shortName") or c
-                        except Exception:
-                            n_input = c
+                    # 勝手に英語名を取得せず、指定がなければコードをそのまま名称にする（編集タブで日本語変更可能）
+                    n_input = parts[1].strip() if len(parts) > 1 and parts[1].strip() else c
 
                     cur_n[c] = n_input
                     cur_t[c] = "監視"
                     if c not in cur_w: cur_w.append(c)
                 save_data(cur_w, cur_n, cur_t)
                 with st.spinner("新規銘柄の株価取得中..."):
-                    st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+                    new_prices = fetch_watchlist_data_memory((c,))
+                    if not st.session_state.cached_price_df.empty:
+                        st.session_state.cached_price_df = pd.concat([st.session_state.cached_price_df, new_prices]).drop_duplicates(subset=["コード"], keep="last")
+                    else:
+                        st.session_state.cached_price_df = new_prices
                 st.rerun()
+    with t_edit:
+        e_c = st.selectbox("編集する銘柄選択", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, '')}")
+        e_n = st.text_input("銘柄名（日本語名などに変更可能）", value=st.session_state.company_names.get(e_c, e_c))
+        if st.button("変更を保存", type="primary"):
+            cur_n = dict(st.session_state.company_names)
+            cur_n[norm_c(e_c)] = e_n.strip()
+            save_data(list(st.session_state.watchlist), cur_n, dict(st.session_state.company_tags))
+            st.toast("銘柄名を変更しました！")
+            st.rerun()
     with t_div:
         st.caption("Yahooの自動取得値がおかしい銘柄に、正式な「今期予想年間配当（円）」を手動で設定して固定します。")
         d_c = st.selectbox("対象銘柄選択", st.session_state.watchlist, format_func=lambda c: f"{c} - {st.session_state.company_names.get(c, '')}", key="div_sel")
@@ -438,13 +444,11 @@ with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"
                     cur_n.pop(norm_c(x), None)
                     cur_t.pop(norm_c(x), None)
                 save_data(new_w, cur_n, cur_t)
-                # メモリ上のキャッシュDFからも即座に除外（API再取得なしで爆速反映）
                 if not st.session_state.cached_price_df.empty:
                     st.session_state.cached_price_df = st.session_state.cached_price_df[~st.session_state.cached_price_df["コード"].isin([norm_c(x) for x in del_targets])]
                 st.toast("削除完了！")
                 st.rerun()
 
-# 初回起動時のみ価格データを取得
 if st.session_state.cached_price_df.empty and st.session_state.watchlist:
     with st.spinner("初期株価データ読込中..."):
         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
@@ -512,7 +516,7 @@ if not df_all.empty:
     # 4タブ構成
     tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
 
-    # マイルドなアップダウンカラー＆スリムなカラム幅を適用するスタイラー関数
+    # マイルドなアップダウンカラー適用のためのスタイラー関数
     def style_dataframe(df_target):
         disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
         
