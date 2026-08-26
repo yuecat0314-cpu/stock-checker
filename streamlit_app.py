@@ -7,10 +7,6 @@ import json, os, unicodedata
 from datetime import datetime
 import pytz
 
-# ==========================================
-# 【前半】設定・データ管理・診断ロジック
-# ==========================================
-
 # --- ページ設定 ＆ 初期データ ---
 st.set_page_config(page_title="高配当株 監視＆8指標診断", layout="wide", page_icon="📈")
 WATCHLIST_FILE, NAMES_FILE = "watchlist.json", "company_names.json"
@@ -34,7 +30,6 @@ INIT_DATA = {
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
-# --- 銘柄リスト＆名前＆タグの保存・復元 ---
 def load_data():
     names = {norm_c(k): v[0] for k, v in INIT_DATA.items()}
     tags = {norm_c(k): v[1] for k, v in INIT_DATA.items()}
@@ -73,7 +68,6 @@ if "watchlist" not in st.session_state:
     w, n, t = load_data()
     st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags = w, n, t
 
-# --- 8つのものさし ＆ 買い時診断モーダル ---
 @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None):
     sym = f"{norm_c(code)}.T"
@@ -83,7 +77,6 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             t = yf.Ticker(sym)
             info, inc, bal, cf, hist = t.info, t.financials, t.balance_sheet, t.cashflow, t.history(period="1y")
             
-            # 1. 健全性8指標判定
             s_growth, s_g_desc = 50, "データ不足"
             if not inc.empty and "Total Revenue" in inc.index:
                 rev = inc.loc["Total Revenue"].dropna()[::-1]
@@ -130,7 +123,6 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             h_score = int(np.mean(h_scores))
             h_rank = "S" if h_score >= 85 else ("A" if h_score >= 70 else ("B" if h_score >= 55 else "C"))
             
-            # 2. 買い時スコア判定
             cur_p = float(cur_p) if cur_p and not pd.isna(cur_p) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
             div_y = float(div_y) if div_y and not pd.isna(div_y) else ((info.get("dividendYield", 0) or 0) * 100)
             if ma25_dev is None or pd.isna(ma25_dev):
@@ -146,7 +138,6 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             b_score = int(s_b_ma * 0.35 + s_b_pos * 0.25 + s_b_div * 0.25 + s_b_pbr * 0.15)
             b_rank = "S" if b_score >= 80 else ("A" if b_score >= 65 else ("B" if b_score >= 50 else "C"))
             
-            # 診断結果表示
             c1, c2 = st.columns(2)
             c1.metric("🏋️ 健全性", f"{h_score}点", f"RANK {h_rank}")
             c2.metric("🎯 買い時", f"{b_score}点", f"RANK {b_rank}")
@@ -164,12 +155,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             st.dataframe(pd.DataFrame({"指標": cats, "スコア": h_scores, "判定": [s_g_desc, f"{op_m:.1f}%", s_ni_desc, s_p_desc, s_div_desc, f"{po_r:.1f}%", f"{eq_r:.1f}%", s_re_desc]}), use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"診断エラー: {e}")
-# ==========================================
-# 【後半】データ取得・一覧・画面表示
-# ==========================================
-
-# --- 高速バッチデータ取得（3ヶ月データで25日乖離を計算） ---
-@st.cache_data(ttl=60)
+            @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers: return pd.DataFrame(), ""
     cln = list(dict.fromkeys([norm_c(t) for t in tickers]))
@@ -197,9 +183,14 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
                     week_pct = ((cur_p - w_p) / w_p) * 100
                     ma25 = float(cl.rolling(25).mean().iloc[-1]) if len(cl) >= 25 else float(cl.mean())
                     ma25_dev = ((cur_p - ma25) / ma25) * 100
+            
             info = yf.Ticker(sym).info
-            raw_y = info.get("dividendYield", 0) or 0
-            div_y = raw_y * 100 if raw_y < 1 else raw_y
+            d_rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0
+            if d_rate and cur_p and not pd.isna(cur_p) and cur_p > 0:
+                div_y = (float(d_rate) / cur_p) * 100
+            else:
+                raw_y = info.get("dividendYield", 0) or 0
+                div_y = raw_y * 100 if raw_y < 0.2 else raw_y
         except: pass
         rows.append({"状態": tags_dict.get(c, "👀 監視中"), "コード": c, "銘柄名": names_dict.get(c, c), "現在値": cur_p, "前日差": diff, "前日比": diff_pct, "1週": week_pct, "利回り": div_y, "ma25_dev": ma25_dev})
     return pd.DataFrame(rows), now_str
@@ -207,7 +198,7 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
 def color_cells(v):
     return 'color: #ff4d4f; font-weight: 700;' if v > 0 else ('color: #1890ff; font-weight: 700;' if v < 0 else 'color: #8c8c8c;') if pd.notna(v) else ''
 
-# --- メイン画面ヘッダー ＆ 銘柄管理 ---
+# --- メイン画面 ---
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
@@ -246,12 +237,12 @@ with st.expander("⚙️ 銘柄管理（追加 / 編集 / 削除）"):
                 save_data([c for c in st.session_state.watchlist if c not in [norm_c(x) for x in del_targets]], dict(st.session_state.company_names), dict(st.session_state.company_tags))
                 st.cache_data.clear(); st.toast("削除完了！"); st.rerun()
 
-# --- データ取得 ＆ 注目シグナル表示 ---
 with st.spinner("データ更新中..."):
     df_all, update_time = fetch_watchlist_data(st.session_state.watchlist, st.session_state.company_names, st.session_state.company_tags)
 
 st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻: **{update_time}** (約20分ディレイ)")
 
+# 注目シグナル
 if not df_all.empty:
     v_df = df_all.dropna(subset=["現在値"])
     signals = []
@@ -269,7 +260,7 @@ if not df_all.empty:
     else: st.success("✅ 現在、極端な急落・過熱シグナルはありません。")
     st.divider()
 
-    # --- 銘柄一覧タブ ---
+    # タブ一覧
     tab_all, tab_h, tab_b, tab_w = st.tabs([f"📋 すべて ({len(df_all)})", f"💼 保有中 ({len(df_all[df_all['状態'] == '💼 保有中'])})", f"🎯 買いたい ({len(df_all[df_all['状態'] == '🎯 買いたい'])})", f"👀 監視中 ({len(df_all[df_all['状態'] == '👀 監視中'])})"])
     cols = ["状態", "コード", "銘柄名", "現在値", "前日差", "前日比", "1週", "利回り"]
     
@@ -289,10 +280,10 @@ if not df_all.empty:
     with tab_w: render_tbl(df_all[df_all["状態"] == "👀 監視中"])
 
     st.divider()
-    # --- 詳細診断エリア ---
     st.subheader("🔍 銘柄詳細診断（健全性 ✕ 買い時）")
     if not df_all.empty:
         s_c = st.selectbox("診断する銘柄", df_all["コード"].tolist(), format_func=lambda c: f"{c} - {df_all.loc[df_all['コード']==c, '銘柄名'].values[0]} ({df_all.loc[df_all['コード']==c, '状態'].values[0]})")
         if st.button("🚀 総合診断を実行", type="primary", use_container_width=True):
             r = df_all[df_all["コード"] == s_c].iloc[0]
-            show_detail_dialog(s_c, r["銘柄名"], r["状態"], cur_p=r["現在値"], div_y=r["利回り"], ma25_dev=r["ma25_dev"])          
+            show_detail_dialog(s_c, r["銘柄名"], r["状態"], cur_p=r["現在値"], div_y=r["利回り"], ma25_dev=r["ma25_dev"])
+
