@@ -30,6 +30,45 @@ INIT_DATA = {
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
+# --- 安定した年間配当金（円）の取得と自前利回り計算 ---
+def calc_dividend_yield(info_dict, cur_price, ticker_obj=None):
+    if not cur_price or pd.isna(cur_price) or cur_price <= 0:
+        return 0.0, 0.0
+
+    # 1. 会社予想年間配当 (dividendRate)
+    d_rate = info_dict.get("dividendRate")
+    # 2. 直近実績年間配当 (trailingAnnualDividendRate)
+    if not d_rate or pd.isna(d_rate) or float(d_rate) <= 0:
+        d_rate = info_dict.get("trailingAnnualDividendRate")
+
+    # 3. 履歴データからの直近1年合計 (フォールバック)
+    if (not d_rate or pd.isna(d_rate) or float(d_rate) <= 0) and ticker_obj is not None:
+        try:
+            div_hist = ticker_obj.dividends
+            if not div_hist.empty:
+                # 直近365日の配当合計
+                d_rate = float(div_hist.last("365D").sum())
+        except: pass
+
+    # 配当額が確定できた場合：自前で (配当額 ÷ 現在値) × 100 を計算
+    if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+        annual_div = float(d_rate)
+        calc_yield = (annual_div / float(cur_price)) * 100
+        # 異常値ガード（普通株で25%を超えるものはデータ不正として弾く）
+        if calc_yield <= 25.0:
+            return calc_yield, annual_div
+
+    # 4. 最終フォールバック：dividendYieldの安全補正
+    raw_y = info_dict.get("dividendYield", 0) or 0
+    if raw_y:
+        raw_val = float(raw_y)
+        # 0.035のような小数表記なら100倍、3.5のような%表記ならそのまま
+        parsed_y = raw_val * 100 if raw_val < 0.20 else raw_val
+        if parsed_y <= 25.0:
+            return parsed_y, (parsed_y / 100.0) * float(cur_price)
+
+    return 0.0, 0.0
+
 # --- 銘柄リスト＆名前＆タグの保存・復元 ---
 def load_data():
     names = {norm_c(k): v[0] for k, v in INIT_DATA.items()}
@@ -117,7 +156,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
                     s_eq = 100 if eq_r >= 50 else (80 if eq_r >= 35 else (60 if eq_r >= 20 else 30))
             
             s_re, s_re_desc = 60, "安定"
-            if not bal.empty and "Retained Earnings" in bal.index:
+            if not bal.empty and "Retained Earnings" in balance.index:
                 re_v = bal.loc["Retained Earnings"].dropna()[::-1]
                 if len(re_v) >= 2:
                     s_re, s_re_desc = (100, "◎ 蓄積中") if re_v.iloc[-1] > re_v.iloc[0] else (40, "△ 横ばい/減少")
@@ -128,7 +167,9 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             
             # 2. 買い時スコア判定
             cur_p = float(cur_p) if cur_p and not pd.isna(cur_p) else (float(hist["Close"].iloc[-1]) if not hist.empty else 0)
-            div_y = float(div_y) if div_y and not pd.isna(div_y) else ((info.get("dividendYield", 0) or 0) * 100)
+            calc_y, annual_d = calc_dividend_yield(info, cur_p, ticker_obj=t)
+            div_y = calc_y if (div_y is None or pd.isna(div_y)) else div_y
+
             if ma25_dev is None or pd.isna(ma25_dev):
                 ma25_dev = ((cur_p - hist["Close"].rolling(25).mean().iloc[-1]) / hist["Close"].rolling(25).mean().iloc[-1]) * 100 if len(hist) >= 25 else 0
             
@@ -142,7 +183,6 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             b_score = int(s_b_ma * 0.35 + s_b_pos * 0.25 + s_b_div * 0.25 + s_b_pbr * 0.15)
             b_rank = "S" if b_score >= 80 else ("A" if b_score >= 65 else ("B" if b_score >= 50 else "C"))
             
-            # 診断結果表示
             c1, c2 = st.columns(2)
             c1.metric("🏋️ 健全性", f"{h_score}点", f"RANK {h_rank}")
             c2.metric("🎯 買い時", f"{b_score}点", f"RANK {b_rank}")
@@ -152,7 +192,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
             elif h_score < 55 and b_score >= 65: st.warning("⚠️【罠銘柄リスク】利回り/割安感は高いですが、業績・減配リスクに注意。")
             else: st.info("👀【通常監視】標準的な水準です。決算や相場急変を監視してください。")
             
-            st.markdown(f"- **現在値**: `{cur_p:,.1f}円` ｜ **利回り**: `{div_y:.2f}%` ｜ **PBR**: `{pbr:.2f}倍` ｜ **25日乖離**: `{ma25_dev:+.2f}%`")
+            st.markdown(f"- **現在値**: `{cur_p:,.1f}円` ｜ **利回り**: `{div_y:.2f}%` (年間配当: `{annual_d:.1f}円`) ｜ **PBR**: `{pbr:.2f}倍` ｜ **25日乖離**: `{ma25_dev:+.2f}%`")
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             fig = go.Figure(go.Scatterpolar(r=h_scores + [h_scores[0]], theta=cats + [cats[0]], fill='toself', fillcolor='rgba(14,165,233,0.25)', line=dict(color='#0284c7', width=2)))
             fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, height=180, margin=dict(l=10, r=10, t=10, b=10))
@@ -161,7 +201,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
         except Exception as e:
             st.error(f"診断エラー: {e}")
 
-# --- 高速バッチデータ取得（配当利回り修正版） ---
+# --- 高速バッチデータ取得（自前利回り計算） ---
 @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers: return pd.DataFrame(), ""
@@ -177,8 +217,9 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
         try:
             df = data[sym] if (not data.empty and len(cln) > 1 and sym in data) else (data if not data.empty and len(cln) == 1 else pd.DataFrame())
+            t_obj = yf.Ticker(sym)
             if df.empty or len(df.dropna(how="all")) < 2:
-                single = yf.Ticker(sym).history(period="1mo")
+                single = t_obj.history(period="1mo")
                 if not single.empty and len(single) >= 2: df = single
             if not df.empty and "Close" in df.columns:
                 cl = df["Close"].dropna()
@@ -190,14 +231,9 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
                     week_pct = ((cur_p - w_p) / w_p) * 100
                     ma25 = float(cl.rolling(25).mean().iloc[-1]) if len(cl) >= 25 else float(cl.mean())
                     ma25_dev = ((cur_p - ma25) / ma25) * 100
-            
-            info = yf.Ticker(sym).info
-            d_rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0
-            if d_rate and cur_p and not pd.isna(cur_p) and cur_p > 0:
-                div_y = (float(d_rate) / cur_p) * 100
-            else:
-                raw_y = info.get("dividendYield", 0) or 0
-                div_y = raw_y * 100 if raw_y < 0.2 else raw_y
+
+            # 自前計算による配当利回りの算出
+            div_y, _ = calc_dividend_yield(t_obj.info, cur_p, ticker_obj=t_obj)
         except: pass
         rows.append({"状態": tags_dict.get(c, "👀 監視中"), "コード": c, "銘柄名": names_dict.get(c, c), "現在値": cur_p, "前日差": diff, "前日比": diff_pct, "1週": week_pct, "利回り": div_y, "ma25_dev": ma25_dev})
     return pd.DataFrame(rows), now_str
