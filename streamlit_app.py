@@ -269,7 +269,7 @@ def show_detail_dialog(code, name, status, cur_p=None, div_y=None, ma25_dev=None
         except Exception as e:
             st.error(f"詳細データ取得エラー: {e}")
 
-# --- 高速バッチデータ取得（3ヶ月データで本物の25日乖離を計算） ---
+# --- 高速バッチデータ取得 ---
 @st.cache_data(ttl=60)
 def fetch_watchlist_data(tickers, names_dict, tags_dict):
     if not tickers:
@@ -277,8 +277,6 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
     
     clean_tickers = list(dict.fromkeys([normalize_code(t) for t in tickers]))
     symbols = [f"{t}.T" for t in clean_tickers]
-    
-    # 25営業日MAを計算するために3ヶ月（3mo）を取得
     data = yf.download(symbols, period="3mo", interval="1d", group_by="ticker", progress=False)
     
     now_str = datetime.now(JST).strftime("%H:%M:%S")
@@ -303,7 +301,6 @@ def fetch_watchlist_data(tickers, names_dict, tags_dict):
             week_price = float(df["Close"].iloc[-6]) if len(df) >= 6 else float(df["Close"].iloc[0])
             week_pct = ((cur_price - week_price) / week_price) * 100
 
-            # 本物の25営業日移動平均線乖離率
             if len(df) >= 25:
                 ma25 = float(df["Close"].rolling(25).mean().iloc[-1])
                 ma25_dev = ((cur_price - ma25) / ma25) * 100
@@ -446,4 +443,6 @@ if not df_all.empty:
     # 2. 高利回り突入（利回り 5.0%以上）
     yield_df = valid_df[valid_df["利回り"] >= 5.0]
     for _, r in yield_df.iterrows():
-        signals.append(f"💰 **【高利回り
+        signals.append(f"💰 **【高利回り突入】** {r['銘柄名']} ({r['コード']}): 利回り `{r['利回り']:.2f}%`")
+
+    # 3. 過熱注意（1週間 +8%以上 または 25日乖離
