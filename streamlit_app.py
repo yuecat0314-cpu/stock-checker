@@ -9,7 +9,6 @@ import pytz
 
 st.set_page_config(page_title="高配当株 監視＆3軸診断", layout="wide", page_icon="📈")
 WATCHLIST_FILE = "watchlist.json"
-MANUAL_DIV_FILE = "manual_dividends.json"
 JPX_MASTER_FILE = "jpx_master.csv"
 JST = pytz.timezone('Asia/Tokyo')
 
@@ -18,7 +17,6 @@ STATUS_OPTS = ["監視", "保有", "趣味"]
 def norm_c(c):
     return unicodedata.normalize("NFKC", str(c)).strip().upper()
 
-# 静的JPXマスターの読み込み（コードから正式な日本語社名と商品分類を完全固定）
 @st.cache_data
 def load_jpx_master():
     if os.path.exists(JPX_MASTER_FILE):
@@ -31,11 +29,9 @@ def load_jpx_master():
     return pd.DataFrame(columns=["銘柄コード", "銘柄名称", "商品分類", "市場区分", "業種"])
 
 jpx_df = load_jpx_master()
-# yfinance用コード（例: 13010 なら 1301.T のように末尾の0や余分な文字を考慮、通常4桁コード + .T）
-# JPXマスターの銘柄コードは「13010」などの場合があるため、先頭4桁を抽出して.Tを付与する
+
 def get_sym(code):
     clean_c = norm_c(code)
-    # 5桁の場合の末尾0などを考慮（一般的に東証4桁+0や文字）
     base_c = clean_c[:4]
     return f"{base_c}.T"
 
@@ -56,61 +52,35 @@ def get_company_name(code):
         return name_map[c_clean[:4]]
     return code
 
-def load_manual_dividends():
-    if os.path.exists(MANUAL_DIV_FILE):
-        try:
-            with open(MANUAL_DIV_FILE, "r", encoding="utf-8") as f:
-                return {norm_c(k): float(v) for k, v in json.load(f).items() if v is not None}
-        except Exception:
-            pass
-    return {}
-
-def save_manual_dividends(m_divs):
-    try:
-        with open(MANUAL_DIV_FILE, "w", encoding="utf-8") as f:
-            json.dump(m_divs, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-if "manual_divs" not in st.session_state:
-    st.session_state.manual_divs = load_manual_dividends()
-
 def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     if not cur_price or pd.isna(cur_price) or cur_price <= 0:
         return 0.0, 0.0, 0.0, "N/A", None
 
-    code_norm = norm_c(code)
-    source_type = "自動取得"
     div_y = 0.0
     annual_d = 0.0
 
-    if code_norm in st.session_state.manual_divs:
-        annual_d = st.session_state.manual_divs[code_norm]
-        div_y = (annual_d / float(cur_price)) * 100
-        source_type = "手動固定"
-    else:
-        raw_y = info_dict.get("dividendYield")
-        if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
-            raw_val = float(raw_y)
-            div_y = raw_val * 100 if raw_val < 0.20 else raw_val
-            annual_d = (div_y / 100.0) * float(cur_price)
-        
-        if div_y == 0.0:
-            d_rate = info_dict.get("dividendRate") or info_dict.get("trailingAnnualDividendRate")
-            if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-                annual_d = float(d_rate)
-                div_y = (annual_d / float(cur_price)) * 100
+    raw_y = info_dict.get("dividendYield")
+    if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
+        raw_val = float(raw_y)
+        div_y = raw_val * 100 if raw_val < 0.20 else raw_val
+        annual_d = (div_y / 100.0) * float(cur_price)
+    
+    if div_y == 0.0:
+        d_rate = info_dict.get("dividendRate") or info_dict.get("trailingAnnualDividendRate")
+        if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
+            annual_d = float(d_rate)
+            div_y = (annual_d / float(cur_price)) * 100
 
-        if div_y == 0.0 and ticker_obj is not None:
-            try:
-                div_hist = ticker_obj.dividends
-                if not div_hist.empty:
-                    last_year_sum = float(div_hist.last("365D").sum())
-                    if last_year_sum > 0:
-                        annual_d = last_year_sum
-                        div_y = (annual_d / float(cur_price)) * 100
-            except Exception:
-                pass
+    if div_y == 0.0 and ticker_obj is not None:
+        try:
+            div_hist = ticker_obj.dividends
+            if not div_hist.empty:
+                last_year_sum = float(div_hist.last("365D").sum())
+                if last_year_sum > 0:
+                    annual_d = last_year_sum
+                    div_y = (annual_d / float(cur_price)) * 100
+        except Exception:
+            pass
 
     hist_div_actual = 0.0
     if ticker_obj is not None:
@@ -126,10 +96,10 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
             pass
 
     warn_msg = None
-    if source_type != "手動固定" and div_y >= 10.0:
+    if div_y >= 10.0:
         warn_msg = f"🚨 利回りが{div_y:.1f}%と高水準です。念のため公式開示情報をご確認ください。"
 
-    return div_y, annual_d, hist_div_actual, source_type, warn_msg
+    return div_y, annual_d, hist_div_actual, "自動取得", warn_msg
 
 def load_watchlist_data():
     tickers, tags = [], {}
@@ -341,7 +311,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
                 st.warning(warn_div)
 
             pbr_disp = f"`{pbr_val:.2f}倍`" if pbr_val is not None else "`欠損`"
-            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 想定年間配当: `{annual_d:.1f}円` ({source_type}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
+            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 想定年間配当: `{annual_d:.1f}円` ({'自動取得'}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
@@ -407,55 +377,6 @@ if c_r.button("🔄 最新データ更新", use_container_width=True):
     with st.spinner("株価データ更新中..."):
         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
     st.rerun()
-
-with st.expander("⚙️ 銘柄管理（追加 / 削除 / 配当手動固定）"):
-    t_add, t_div, t_del = st.tabs(["➕ 追加", "💰 配当手動固定", "🗑️ 削除"])
-    with t_add:
-        in_code = st.text_input("コード（例: 8058, 9432）")
-        if st.button("追加する", type="primary"):
-            if in_code:
-                cur_w, cur_t = list(st.session_state.watchlist), dict(st.session_state.company_tags)
-                for it in in_code.split(","):
-                    if not it.strip(): continue
-                    c = norm_c(it.split(":")[0].split("：")[0])
-                    cur_t[c] = "監視"
-                    if c not in cur_w: cur_w.append(c)
-                save_watchlist_data(cur_w, cur_t)
-                with st.spinner("新規銘柄の株価取得中..."):
-                    new_prices = fetch_watchlist_data_memory(tuple(cur_w))
-                    st.session_state.cached_price_df = new_prices
-                st.rerun()
-    with t_div:
-        st.caption("Yahooの自動取得値がおかしい銘柄に、正式な「今期予想年間配当（円）」を手動で設定して固定します。")
-        d_c = st.selectbox("対象銘柄選択", st.session_state.watchlist, format_func=lambda c: f"{c} - {get_company_name(c)}", key="div_sel")
-        cur_m_val = st.session_state.manual_divs.get(norm_c(d_c), 0.0)
-        new_d_val = st.number_input("手動予想配当（円 / 年間）※0または未入力で自動取得に戻す", min_value=0.0, value=float(cur_m_val), step=0.5, format="%.2f")
-        if st.button("配当固定を保存", type="primary"):
-            c_key = norm_c(d_c)
-            if new_d_val > 0:
-                st.session_state.manual_divs[c_key] = new_d_val
-                st.success(f"{d_c} の年間配当を {new_d_val}円 に手動固定しました。")
-            else:
-                if c_key in st.session_state.manual_divs:
-                    del st.session_state.manual_divs[c_key]
-                    st.info(f"{d_c} の手動固定を解除し、自動取得に戻しました。")
-            save_manual_dividends(st.session_state.manual_divs)
-            with st.spinner("更新中..."):
-                st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
-            st.rerun()
-    with t_del:
-        del_targets = st.multiselect("削除銘柄", st.session_state.watchlist, format_func=lambda c: f"{c} - {get_company_name(c)}")
-        if st.button("一括削除", type="secondary"):
-            if del_targets:
-                new_w = [c for c in st.session_state.watchlist if c not in [norm_c(x) for x in del_targets]]
-                cur_t = dict(st.session_state.company_tags)
-                for x in del_targets:
-                    cur_t.pop(norm_c(x), None)
-                save_watchlist_data(new_w, cur_t)
-                if not st.session_state.cached_price_df.empty:
-                    st.session_state.cached_price_df = st.session_state.cached_price_df[~st.session_state.cached_price_df["コード"].isin([norm_c(x) for x in del_targets])]
-                st.toast("削除完了！")
-                st.rerun()
 
 if st.session_state.cached_price_df.empty and st.session_state.watchlist:
     with st.spinner("初期株価データ読込中..."):
@@ -574,17 +495,31 @@ if not df_all.empty:
         style_dataframe(df_all)
 
     def render_action_tab(tag_name):
-        subset_df = df_all[df_all["状態"] == tag_name].copy()
-        
         with st.container(border=True):
-            st.markdown(f"##### ⚡ 【{tag_name}】クイック操作パネル")
+            st.markdown(f"##### ⚡ 【{tag_name}】銘柄追加 ＆ クイック操作")
             
+            in_code = st.text_input("銘柄を追加（カンマ区切りで複数可: 8058, 9432）", key=f"add_input_{tag_name}")
+            if st.button("➕ 追加する", key=f"add_btn_{tag_name}", type="primary"):
+                if in_code:
+                    cur_w, cur_t = list(st.session_state.watchlist), dict(st.session_state.company_tags)
+                    for it in in_code.split(","):
+                        if not it.strip(): continue
+                        c = norm_c(it.split(":")[0].split("：")[0])
+                        cur_t[c] = tag_name
+                        if c not in cur_w: cur_w.append(c)
+                    save_watchlist_data(cur_w, cur_t)
+                    with st.spinner("追加銘柄の株価取得中..."):
+                        st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(cur_w))
+                    st.rerun()
+
+            st.markdown("---")
+
             tab_codes = df_all[df_all["状態"] == tag_name]["コード"].tolist()
             if not tab_codes:
                 st.info(f"「{tag_name}」タブに該当する銘柄はありません。")
             else:
                 q_key = f"search_input_{tag_name}"
-                search_val = st.text_input(f"銘柄を検索 ({tag_name}タブ内)", placeholder="コードまたは銘柄名を入力（例: 8058 または セブン）", key=q_key)
+                search_val = st.text_input(f"銘柄を検索 ({tag_name}タブ内)", placeholder="コードまたは銘柄名を入力", key=q_key)
                 
                 filtered_codes = tab_codes
                 if search_val.strip():
@@ -614,7 +549,7 @@ if not df_all.empty:
                             show_detail_dialog(sel_c, s_name, s_tag, cur_p=cur_p, ma25_dev=ma_dev)
 
                         for idx, ot in enumerate(other_tags):
-                            if btn_cols[1 + idx].button(f"👉 {ot}へ", key=f"btn_move_{tag_name}_{sel_c}_{ot}", use_container_width=True):
+                            if btn_cols[1 + idx].button(f"👉 {ot}", key=f"btn_move_{tag_name}_{sel_c}_{ot}", use_container_width=True):
                                 cur_t = dict(st.session_state.company_tags)
                                 cur_t[sel_c] = ot
                                 save_watchlist_data(list(st.session_state.watchlist), cur_t)
@@ -634,6 +569,7 @@ if not df_all.empty:
                     st.warning("一致する銘柄が見つかりませんでした。")
 
         st.markdown("---")
+        subset_df = df_all[df_all["状態"] == tag_name].copy()
         style_dataframe(subset_df)
 
     with tab_watch:
@@ -642,18 +578,3 @@ if not df_all.empty:
         render_action_tab("保有")
     with tab_hobby:
         render_action_tab("趣味")
-
-    st.divider()
-    st.markdown("##### 🔍 銘柄個別クイック診断（レーダーチャート確認）")
-    if not df_all.empty:
-        diag_c1, diag_c2 = st.columns([3, 1])
-        diag_sel = diag_c1.selectbox(
-            "診断する銘柄を選択",
-            df_all["コード"].tolist(),
-            format_func=lambda c: f"{c} - {get_company_name(c)} ({st.session_state.company_tags.get(c, '監視')})",
-            key="bottom_diag_select",
-            label_visibility="collapsed"
-        )
-        if diag_c2.button("🚀 総合診断を実行", type="primary", use_container_width=True):
-            r = df_all[df_all["コード"] == diag_sel].iloc[0]
-            show_detail_dialog(diag_sel, get_company_name(diag_sel), st.session_state.company_tags.get(diag_sel, '監視'), cur_p=r["現在値"], ma25_dev=r["25日乖離"])
