@@ -30,6 +30,14 @@ def load_jpx_master():
 
 jpx_df = load_jpx_master()
 
+# 全社検索用の選択肢リストを事前作成 (例: "1301 - 極洋")
+jpx_options = []
+if not jpx_df.empty:
+    for _, row in jpx_df.iterrows():
+        c_raw = str(row["銘柄コード"]).strip()
+        n_val = str(row["銘柄名称"]).strip()
+        jpx_options.append(f"{c_raw} - {n_val}")
+
 def get_sym(code):
     clean_c = norm_c(code)
     base_c = clean_c[:4]
@@ -311,7 +319,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
                 st.warning(warn_div)
 
             pbr_disp = f"`{pbr_val:.2f}倍`" if pbr_val is not None else "`欠損`"
-            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 想定年間配当: `{annual_d:.1f}円` ({'自動取得'}) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
+            st.caption(f"診断信頼度: **{reliability_stars}** ｜ 現在値: `{cur_p:,.1f}円` ｜ 想定年間配当: `{annual_d:.1f}円` (自動取得) ｜ 実績配当: `{hist_actual_d:.1f}円` ｜ 利回り: `{div_y:.2f}%` ｜ PBR: {pbr_disp}")
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
@@ -496,77 +504,87 @@ if not df_all.empty:
 
     def render_action_tab(tag_name):
         with st.container(border=True):
-            st.markdown(f"##### ⚡ 【{tag_name}】銘柄追加 ＆ クイック操作")
+            st.markdown(f"##### ⚡ 【{tag_name}】一括追加 ＆ 銘柄管理")
             
-            in_code = st.text_input("銘柄を追加（カンマ区切りで複数可: 8058, 9432）", key=f"add_input_{tag_name}")
-            if st.button("➕ 追加する", key=f"add_btn_{tag_name}", type="primary"):
-                if in_code:
+            # 1. 一括追加エリア (JPXマスター全体から複数検索・選択してタグ化)
+            sel_adds = st.multiselect(
+                "銘柄を検索して追加 (複数選択可)",
+                options=jpx_options,
+                key=f"multiselect_add_{tag_name}",
+                placeholder="コードや社名の一部を入力して検索（例: 8058, トヨタ）"
+            )
+            if st.button("➕ 選択した銘柄を追加する", key=f"btn_add_exec_{tag_name}", type="primary"):
+                if sel_adds:
                     cur_w, cur_t = list(st.session_state.watchlist), dict(st.session_state.company_tags)
-                    for it in in_code.split(","):
-                        if not it.strip(): continue
-                        c = norm_c(it.split(":")[0].split("：")[0])
-                        cur_t[c] = tag_name
-                        if c not in cur_w: cur_w.append(c)
+                    added_count = 0
+                    for item in sel_adds:
+                        # "13010 - 極洋" のような形式からコード部分を抽出
+                        c_code = norm_c(item.split(" - ")[0])
+                        cur_t[c_code] = tag_name
+                        if c_code not in cur_w:
+                            cur_w.append(c_code)
+                            added_count += 1
                     save_watchlist_data(cur_w, cur_t)
                     with st.spinner("追加銘柄の株価取得中..."):
                         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(cur_w))
+                    st.success(f"{added_count} 銘柄を追加しました！")
                     st.rerun()
 
             st.markdown("---")
 
+            # 2. タブ内の既存銘柄一覧と一括操作（個別診断 ｜ 他タブ移動 ｜ 一括削除）
             tab_codes = df_all[df_all["状態"] == tag_name]["コード"].tolist()
             if not tab_codes:
                 st.info(f"「{tag_name}」タブに該当する銘柄はありません。")
             else:
-                q_key = f"search_input_{tag_name}"
-                search_val = st.text_input(f"銘柄を検索 ({tag_name}タブ内)", placeholder="コードまたは銘柄名を入力", key=q_key)
-                
-                filtered_codes = tab_codes
-                if search_val.strip():
-                    q_low = search_val.strip().lower()
-                    filtered_codes = [c for c in tab_codes if q_low in c.lower() or q_low in get_company_name(c).lower()]
-                
-                if filtered_codes:
-                    sel_c = st.selectbox(
-                        "該当銘柄",
-                        filtered_codes,
-                        format_func=lambda c: f"{c} - {get_company_name(c)}",
-                        key=f"target_select_{tag_name}"
-                    )
+                tab_options = [f"{c} - {get_company_name(c)}" for c in tab_codes]
+                sel_manages = st.multiselect(
+                    f"管理する銘柄を選択 ({tag_name}タブ内)",
+                    options=tab_options,
+                    key=f"multiselect_manage_{tag_name}",
+                    placeholder="銘柄を選択または検索（複数選択可）"
+                )
+
+                if sel_manages:
+                    # 選択された銘柄に対するアクションボタン群
+                    sel_codes = [norm_c(item.split(" - ")[0]) for item in sel_manages]
                     
-                    if sel_c:
-                        s_name = get_company_name(sel_c)
-                        s_tag = st.session_state.company_tags.get(sel_c, tag_name)
-                        r_match = df_all[df_all["コード"] == sel_c]
+                    col_act1, col_act2, col_act3 = st.columns(3)
+                    
+                    # 単一選択時の個別診断ボタン（先頭の1件を対象にする等）
+                    if len(sel_codes) == 1:
+                        s_c = sel_codes[0]
+                        s_name = get_company_name(s_c)
+                        r_match = df_all[df_all["コード"] == s_c]
                         cur_p = r_match.iloc[0]["現在値"] if not r_match.empty else None
                         ma_dev = r_match.iloc[0]["25日乖離"] if not r_match.empty else None
+                        if col_act1.button("🔍 選択銘柄の診断", key=f"diag_btn_{tag_name}", use_container_width=True):
+                            show_detail_dialog(s_c, s_name, tag_name, cur_p=cur_p, ma25_dev=ma_dev)
+                    else:
+                        col_act1.caption("※診断は1件のみ選択時有効")
 
-                        other_tags = [t for t in STATUS_OPTS if t != tag_name]
-                        total_btns = 1 + len(other_tags) + 1
-                        btn_cols = st.columns(total_btns)
-                        
-                        if btn_cols[0].button("🔍 診断", key=f"btn_diag_{tag_name}_{sel_c}", use_container_width=True):
-                            show_detail_dialog(sel_c, s_name, s_tag, cur_p=cur_p, ma25_dev=ma_dev)
-
-                        for idx, ot in enumerate(other_tags):
-                            if btn_cols[1 + idx].button(f"👉 {ot}", key=f"btn_move_{tag_name}_{sel_c}_{ot}", use_container_width=True):
-                                cur_t = dict(st.session_state.company_tags)
-                                cur_t[sel_c] = ot
-                                save_watchlist_data(list(st.session_state.watchlist), cur_t)
-                                st.toast(f"{s_name} を「{ot}」に移動しました！")
-                                st.rerun()
-
-                        if btn_cols[-1].button("🗑️ 削除", key=f"btn_del_{tag_name}_{sel_c}", use_container_width=True, type="secondary"):
-                            new_w = [w for w in st.session_state.watchlist if w != sel_c]
+                    other_tags = [t for t in STATUS_OPTS if t != tag_name]
+                    # 他タブへの一括移動
+                    for idx, ot in enumerate(other_tags):
+                        if col_act2.button(f"👉 選択分を「{ot}」へ移動", key=f"move_btn_{tag_name}_{ot}", use_container_width=True):
                             cur_t = dict(st.session_state.company_tags)
-                            cur_t.pop(sel_c, None)
-                            save_watchlist_data(new_w, cur_t)
-                            if not st.session_state.cached_price_df.empty:
-                                st.session_state.cached_price_df = st.session_state.cached_price_df[st.session_state.cached_price_df["コード"] != sel_c]
-                            st.toast(f"{s_name} を削除しました。")
+                            for s_c in sel_codes:
+                                cur_t[s_c] = ot
+                            save_watchlist_data(list(st.session_state.watchlist), cur_t)
+                            st.success(f"{len(sel_codes)} 銘柄を「{ot}」に移動しました！")
                             st.rerun()
-                else:
-                    st.warning("一致する銘柄が見つかりませんでした。")
+
+                    # 一括削除
+                    if col_act3.button("🗑️ 選択分を一括削除", key=f"del_btn_{tag_name}", use_container_width=True, type="secondary"):
+                        new_w = [w for w in st.session_state.watchlist if w not in sel_codes]
+                        cur_t = dict(st.session_state.company_tags)
+                        for s_c in sel_codes:
+                            cur_t.pop(s_c, None)
+                        save_watchlist_data(new_w, cur_t)
+                        if not st.session_state.cached_price_df.empty:
+                            st.session_state.cached_price_df = st.session_state.cached_price_df[~st.session_state.cached_price_df["コード"].isin(sel_codes)]
+                        st.success(f"{len(sel_codes)} 銘柄を削除しました！")
+                        st.rerun()
 
         st.markdown("---")
         subset_df = df_all[df_all["状態"] == tag_name].copy()
