@@ -30,7 +30,6 @@ def load_jpx_master():
 
 jpx_df = load_jpx_master()
 
-# 全社検索用の選択肢リストを事前作成 (例: "1301 - 極洋")
 jpx_options = []
 if not jpx_df.empty:
     for _, row in jpx_df.iterrows():
@@ -110,40 +109,74 @@ def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
     return div_y, annual_d, hist_div_actual, "自動取得", warn_msg
 
 def load_watchlist_data():
-    tickers, tags = [], {}
+    tickers, tags, details = [], {}, {}
     if os.path.exists(WATCHLIST_FILE):
         try:
             with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
                 if isinstance(d, dict):
-                    tickers = list(d.keys())
-                    for k, v in d.items(): 
-                        val = v if v in STATUS_OPTS else "監視"
-                        if val in ["💼 保有中", "保有"]: val = "保有"
-                        elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
-                        else: val = "趣味"
-                        tags[norm_c(k)] = val
+                    for k, v in d.items():
+                        c_norm = norm_c(k)
+                        tickers.append(c_norm)
+                        if isinstance(v, dict):
+                            val = v.get("status", "監視")
+                            if val in ["💼 保有中", "保有"]: val = "保有"
+                            elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
+                            else: val = "趣味"
+                            tags[c_norm] = val
+                            details[c_norm] = {
+                                "buy_price": float(v.get("buy_price", 0.0)),
+                                "shares": int(v.get("shares", 0)),
+                                "target_price": float(v.get("target_price", 0.0)),
+                                "annual_div": float(v.get("annual_div", 0.0))
+                            }
+                        else:
+                            val = v if v in STATUS_OPTS else "監視"
+                            if val in ["💼 保有中", "保有"]: val = "保有"
+                            elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
+                            else: val = "趣味"
+                            tags[c_norm] = val
+                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0}
                 elif isinstance(d, list):
-                    tickers = [norm_c(c) for c in d]
+                    for c in d:
+                        c_norm = norm_c(c)
+                        tickers.append(c_norm)
+                        tags[c_norm] = "監視"
+                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0}
         except Exception:
             pass
-    cln = list(dict.fromkeys([norm_c(c) for c in tickers]))
+    cln = list(dict.fromkeys(tickers))
     for c in cln:
         if c not in tags: tags[c] = "監視"
-    return cln, tags
+        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0}
+    return cln, tags, details
 
-def save_watchlist_data(tickers, tags):
+def save_watchlist_data(tickers, tags, details):
     cln = list(dict.fromkeys([norm_c(c) for c in tickers]))
-    st.session_state.watchlist, st.session_state.company_tags = cln, tags
+    st.session_state.watchlist = cln
+    st.session_state.company_tags = tags
+    st.session_state.portfolio_details = details
     try:
+        data_to_save = {}
+        for c in cln:
+            det = details.get(c, {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0})
+            data_to_save[c] = {
+                "status": tags.get(c, "監視"),
+                "buy_price": det.get("buy_price", 0.0),
+                "shares": det.get("shares", 0),
+                "target_price": det.get("target_price", 0.0),
+                "annual_div": det.get("annual_div", 0.0)
+            }
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump({c: tags.get(c, "監視") for c in cln}, f, ensure_ascii=False, indent=2)
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 if "watchlist" not in st.session_state:
-    w, t = load_watchlist_data()
-    st.session_state.watchlist, st.session_state.company_tags = w, t
+    w, t, d = load_watchlist_data()
+    st.session_state.watchlist = w
+    st.session_state.company_tags = t
+    st.session_state.portfolio_details = d
 
 @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
@@ -379,7 +412,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "利回り": div_y
         })
     return pd.DataFrame(rows)
-c_t, c_r = st.columns([3, 1])
+    c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
     with st.spinner("株価データ更新中..."):
@@ -454,23 +487,19 @@ if not df_all.empty:
         
     st.divider()
 
-    tab_all, tab_watch, tab_hold, tab_hobby = st.tabs(["すべて", "監視", "保有", "趣味"])
+    tab_all, tab_watch, tab_hold, tab_hobby, tab_profit = st.tabs(["すべて", "監視", "保有", "趣味", "🎯 利確ライン"])
 
     def style_dataframe(df_target):
         disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
-        
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
         disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
 
         def color_cells(v):
-            if pd.isna(v):
-                return ''
+            if pd.isna(v): return ''
             if isinstance(v, (int, float)):
-                if v > 0:
-                    return 'color: #f87171; font-weight: 600;'
-                elif v < 0:
-                    return 'color: #60a5fa; font-weight: 600;'
+                if v > 0: return 'color: #f87171; font-weight: 600;'
+                elif v < 0: return 'color: #60a5fa; font-weight: 600;'
             return ''
 
         styler = disp_df.style
@@ -506,7 +535,6 @@ if not df_all.empty:
         with st.container(border=True):
             st.markdown(f"##### ⚡ 【{tag_name}】一括追加 ＆ 銘柄管理")
             
-            # 1. 一括追加エリア (JPXマスター全体から複数検索・選択してタグ化)
             sel_adds = st.multiselect(
                 "銘柄を検索して追加 (複数選択可)",
                 options=jpx_options,
@@ -515,16 +543,16 @@ if not df_all.empty:
             )
             if st.button("➕ 選択した銘柄を追加する", key=f"btn_add_exec_{tag_name}", type="primary"):
                 if sel_adds:
-                    cur_w, cur_t = list(st.session_state.watchlist), dict(st.session_state.company_tags)
+                    cur_w, cur_t, cur_d = list(st.session_state.watchlist), dict(st.session_state.company_tags), dict(st.session_state.portfolio_details)
                     added_count = 0
                     for item in sel_adds:
-                        # "13010 - 極洋" のような形式からコード部分を抽出
                         c_code = norm_c(item.split(" - ")[0])
                         cur_t[c_code] = tag_name
                         if c_code not in cur_w:
                             cur_w.append(c_code)
+                            cur_d[c_code] = {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0}
                             added_count += 1
-                    save_watchlist_data(cur_w, cur_t)
+                    save_watchlist_data(cur_w, cur_t, cur_d)
                     with st.spinner("追加銘柄の株価取得中..."):
                         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(cur_w))
                     st.success(f"{added_count} 銘柄を追加しました！")
@@ -532,7 +560,6 @@ if not df_all.empty:
 
             st.markdown("---")
 
-            # 2. タブ内の既存銘柄一覧と一括操作（個別診断 ｜ 他タブ移動 ｜ 一括削除）
             tab_codes = df_all[df_all["状態"] == tag_name]["コード"].tolist()
             if not tab_codes:
                 st.info(f"「{tag_name}」タブに該当する銘柄はありません。")
@@ -546,12 +573,9 @@ if not df_all.empty:
                 )
 
                 if sel_manages:
-                    # 選択された銘柄に対するアクションボタン群
                     sel_codes = [norm_c(item.split(" - ")[0]) for item in sel_manages]
-                    
                     col_act1, col_act2, col_act3 = st.columns(3)
                     
-                    # 単一選択時の個別診断ボタン（先頭の1件を対象にする等）
                     if len(sel_codes) == 1:
                         s_c = sel_codes[0]
                         s_name = get_company_name(s_c)
@@ -564,23 +588,23 @@ if not df_all.empty:
                         col_act1.caption("※診断は1件のみ選択時有効")
 
                     other_tags = [t for t in STATUS_OPTS if t != tag_name]
-                    # 他タブへの一括移動
                     for idx, ot in enumerate(other_tags):
                         if col_act2.button(f"👉 選択分を「{ot}」へ移動", key=f"move_btn_{tag_name}_{ot}", use_container_width=True):
                             cur_t = dict(st.session_state.company_tags)
                             for s_c in sel_codes:
                                 cur_t[s_c] = ot
-                            save_watchlist_data(list(st.session_state.watchlist), cur_t)
+                            save_watchlist_data(list(st.session_state.watchlist), cur_t, st.session_state.portfolio_details)
                             st.success(f"{len(sel_codes)} 銘柄を「{ot}」に移動しました！")
                             st.rerun()
 
-                    # 一括削除
                     if col_act3.button("🗑️ 選択分を一括削除", key=f"del_btn_{tag_name}", use_container_width=True, type="secondary"):
                         new_w = [w for w in st.session_state.watchlist if w not in sel_codes]
                         cur_t = dict(st.session_state.company_tags)
+                        cur_d = dict(st.session_state.portfolio_details)
                         for s_c in sel_codes:
                             cur_t.pop(s_c, None)
-                        save_watchlist_data(new_w, cur_t)
+                            cur_d.pop(s_c, None)
+                        save_watchlist_data(new_w, cur_t, cur_d)
                         if not st.session_state.cached_price_df.empty:
                             st.session_state.cached_price_df = st.session_state.cached_price_df[~st.session_state.cached_price_df["コード"].isin(sel_codes)]
                         st.success(f"{len(sel_codes)} 銘柄を削除しました！")
@@ -596,3 +620,133 @@ if not df_all.empty:
         render_action_tab("保有")
     with tab_hobby:
         render_action_tab("趣味")
+
+    with tab_profit:
+        st.markdown("##### 🎯 保有銘柄の利回りと利確ライン管理")
+        st.caption("保有タブに登録されている銘柄の「取得単価」「保有株数」「利確ライン」「年間配当金」を手入力で設定し、YOC（取得ベース利回り）や売り時を冷静に判断するチェッカーです。")
+        
+        hold_codes = df_all[df_all["State"] if "State" in df_all.columns else df_all["状態"] == "保有"]["コード"].tolist()
+        
+        if not hold_codes:
+            st.info("現在、「保有」タブに登録されている銘柄はありません。まずは「保有」タブで銘柄を追加してください。")
+        else:
+            if "portfolio_details" not in st.session_state:
+                st.session_state.portfolio_details = {}
+
+            with st.form("portfolio_form"):
+                updated_details = {}
+                for hc in hold_codes:
+                    h_name = get_company_name(hc)
+                    p_match = df_all[df_all["コード"] == hc]
+                    cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
+
+                    saved_info = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0})
+                    
+                    st.markdown(f"**📌 {h_name} ({hc})** ｜ 現在値: `{cur_p:,.1f} 円`")
+                    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                    b_price = col_p1.number_input(f"取得単価 (円) [{hc}]", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f")
+                    n_shares = col_p2.number_input(f"保持株数 [{hc}]", min_value=0, value=int(saved_info.get("shares", 0)), step=100)
+                    t_price = col_p3.number_input(f"利確ライン (円) [{hc}]", min_value=0.0, value=float(saved_info.get("target_price", 0.0)), step=1.0, format="%.1f")
+                    a_div = col_p4.number_input(f"年間配当金(1株) [{hc}]", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f")
+                    
+                    updated_details[hc] = {"buy_price": b_price, "shares": n_shares, "target_price": t_price, "annual_div": a_div}
+                    st.divider()
+
+                if st.form_submit_button("💾 入力内容を保存する", type="primary"):
+                    st.session_state.portfolio_details = updated_details
+                    save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, updated_details)
+                    st.success("利確ライン・保有データを保存しました！")
+                    st.rerun()
+
+            profit_rows = []
+            for hc in hold_codes:
+                h_name = get_company_name(hc)
+                p_match = df_all[df_all["コード"] == hc]
+                cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
+                week_p = p_match.iloc[0]["1週"] if not p_match.empty and not pd.isna(p_match.iloc[0]["1週"]) else 0.0
+                ma_dev = p_match.iloc[0]["25日乖離"] if not p_match.empty and not pd.isna(p_match.iloc[0]["25日乖離"]) else 0.0
+
+                det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "target_price": 0.0, "annual_div": 0.0})
+                bp = det.get("buy_price", 0.0)
+                sh = det.get("shares", 0)
+                tp = det.get("target_price", 0.0)
+                ad = det.get("annual_div", 0.0)
+
+                # 計算ロジック
+                p_loss_yen = (cur_p - bp) * sh if bp > 0 and sh > 0 else np.nan
+                p_loss_pct = ((cur_p - bp) / bp) * 100 if bp > 0 else np.nan
+                target_progress = (cur_p / tp) * 100 if tp > 0 else np.nan
+                yoc = (ad / bp) * 100 if bp > 0 and ad > 0 else np.nan
+                target_div_yield = (ad / tp) * 100 if tp > 0 and ad > 0 else np.nan
+                div_multiple = (cur_p - bp) / ad if bp > 0 and ad > 0 else np.nan
+
+                # 警告アイコン判定ロジック
+                status_icon = "🟢 通常"
+                if tp > 0 and cur_p >= tp:
+                    status_icon = "🔴 要確認(利確到達)"
+                elif tp > 0 and cur_p >= tp * 0.95:
+                    status_icon = "🟡 上昇警戒(利確接近)"
+                elif week_p >= 6.0 or ma_dev >= 7.0:
+                    status_icon = "🟡 上昇警戒(急騰・過熱)"
+                elif week_p <= -5.0 or ma_dev <= -5.0:
+                    status_icon = "🔵 下落警戒(急落・乖離)"
+
+                profit_rows.append({
+                    "状態": status_icon,
+                    "コード": hc,
+                    "銘柄名": h_name,
+                    "現在値": cur_p,
+                    "取得単価": bp if bp > 0 else np.nan,
+                    "利確ライン": tp if tp > 0 else np.nan,
+                    "達成率": target_progress,
+                    "評価損益": p_loss_yen,
+                    "損益率": p_loss_pct,
+                    "YOC(取得利回り)": yoc,
+                    "到達時利回り": target_div_yield,
+                    "配当倍率": div_multiple
+                })
+
+            if profit_rows:
+                pdf = pd.DataFrame(profit_rows)
+                st.markdown("##### 📊 利確判断・保有ステータス一覧")
+                
+                def color_profit_cells(v):
+                    if pd.isna(v): return ''
+                    if isinstance(v, (int, float)):
+                        if v > 0: return 'color: #f87171; font-weight: 600;'
+                        elif v < 0: return 'color: #60a5fa; font-weight: 600;'
+                    return ''
+
+                p_styler = pdf.style
+                p_map_fn = p_styler.map if hasattr(p_styler, 'map') else p_styler.applymap
+                p_styled = p_map_fn(color_profit_cells, subset=['損益率', '評価損益']).format({
+                    '現在値': '{:,.1f} 円',
+                    '取得単価': '{:,.1f} 円',
+                    '利確ライン': '{:,.1f} 円',
+                    '達成率': '{:.1f}%',
+                    '評価損益': '{:+,.0f} 円',
+                    '損益率': '{:+.2f}%',
+                    'YOC(取得利回り)': '{:.2f}%',
+                    '到達時利回り': '{:.2f}%',
+                    '配当倍率': '{:.1f}年分'
+                }, na_rep='-')
+
+                st.dataframe(
+                    p_styled,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "状態": st.column_config.TextColumn("判定", width="small"),
+                        "コード": st.column_config.TextColumn("コード", width="small"),
+                        "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
+                        "現在値": st.column_config.NumberColumn("現在値"),
+                        "取得単価": st.column_config.NumberColumn("取得単価"),
+                        "利確ライン": st.column_config.NumberColumn("利確ライン"),
+                        "達成率": st.column_config.NumberColumn("目標達成率"),
+                        "評価損益": st.column_config.NumberColumn("評価損益"),
+                        "損益率": st.column_config.NumberColumn("損益率"),
+                        "YOC(取得利回り)": st.column_config.NumberColumn("取得利回り"),
+                        "到達時利回り": st.column_config.NumberColumn("到達時利回り"),
+                        "配当倍率": st.column_config.NumberColumn("含み益配当倍率"),
+                    }
+    )
