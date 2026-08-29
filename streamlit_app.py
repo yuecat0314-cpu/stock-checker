@@ -34,8 +34,10 @@ jpx_options = []
 if not jpx_df.empty:
     for _, row in jpx_df.iterrows():
         c_raw = str(row["銘柄コード"]).strip()
+        # 5桁などになってしまわないよう、先頭4文字を基本コードとして正規化
+        c_4 = norm_c(c_raw)[:4]
         n_val = str(row["銘柄名称"]).strip()
-        jpx_options.append(f"{c_raw} - {n_val}")
+        jpx_options.append(f"{c_4} - {n_val}")
 
 def get_sym(code):
     clean_c = norm_c(code)
@@ -46,7 +48,7 @@ name_map = {}
 if not jpx_df.empty:
     for _, row in jpx_df.iterrows():
         c_raw = str(row["銘柄コード"]).strip()
-        c_4 = c_raw[:4]
+        c_4 = norm_c(c_raw)[:4]
         n_val = str(row["銘柄名称"]).strip()
         name_map[c_raw] = n_val
         name_map[c_4] = n_val
@@ -116,7 +118,7 @@ def load_watchlist_data():
                 d = json.load(f)
                 if isinstance(d, dict):
                     for k, v in d.items():
-                        c_norm = norm_c(k)
+                        c_norm = norm_c(k)[:4]
                         tickers.append(c_norm)
                         if isinstance(v, dict):
                             val = v.get("status", "監視")
@@ -138,7 +140,7 @@ def load_watchlist_data():
                             details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
                 elif isinstance(d, list):
                     for c in d:
-                        c_norm = norm_c(c)
+                        c_norm = norm_c(c)[:4]
                         tickers.append(c_norm)
                         tags[c_norm] = "監視"
                         details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
@@ -151,7 +153,7 @@ def load_watchlist_data():
     return cln, tags, details
 
 def save_watchlist_data(tickers, tags, details):
-    cln = list(dict.fromkeys([norm_c(c) for c in tickers]))
+    cln = list(dict.fromkeys([norm_c(c)[:4] for c in tickers]))
     st.session_state.watchlist = cln
     st.session_state.company_tags = tags
     st.session_state.portfolio_details = details
@@ -175,8 +177,7 @@ if "watchlist" not in st.session_state:
     st.session_state.watchlist = w
     st.session_state.company_tags = t
     st.session_state.portfolio_details = d
-
-@st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
+    @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     sym = get_sym(code)
     st.caption(f"対象銘柄: **{name}** ({sym}) ｜ 分類: **{status}**")
@@ -369,7 +370,7 @@ if "cached_price_df" not in st.session_state:
 
 def fetch_watchlist_data_memory(tickers_tuple):
     if not tickers_tuple: return pd.DataFrame()
-    cln = list(dict.fromkeys([norm_c(t) for t in tickers_tuple]))
+    cln = list(dict.fromkeys([norm_c(t)[:4] for t in tickers_tuple]))
     syms = [get_sym(t) for t in cln]
     try:
         data = yf.download(syms, period="3mo", interval="1d", group_by="ticker", auto_adjust=False, progress=False)
@@ -569,7 +570,7 @@ if not df_all.empty:
             selected_edit_item = st.selectbox("個別設定・調整する銘柄を選択", edit_options, key="select_profit_edit")
             
             if selected_edit_item:
-                target_hc = norm_c(selected_edit_item.split(" - ")[0])
+                target_hc = norm_c(selected_edit_item.split(" - ")[0])[:4]
                 target_name = get_company_name(target_hc)
                 p_match = df_all[df_all["コード"] == target_hc]
                 cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
@@ -652,7 +653,7 @@ if not df_all.empty:
                     '取得単価': '{:,.1f} 円',
                     '評価損益': '{:+,.0f} 円',
                     '損益率': '{:+.2f}%',
-                    '年間配当総額': '{:,.0f} 円',
+                    '年間配add総額': '{:,.0f} 円',
                     'YOC(取得利回り)': '{:.2f}%',
                     '配当倍率': '{:.1f}年分'
                 }, na_rep='-')
@@ -688,7 +689,7 @@ with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
     add_status = st.selectbox("登録分類", STATUS_OPTS)
     if st.button("追加する", type="primary"):
         if sel_code:
-            norm_add = norm_c(sel_code)
+            norm_add = norm_c(sel_code)[:4]
             if norm_add not in st.session_state.watchlist:
                 st.session_state.watchlist.append(norm_add)
                 st.session_state.company_tags[norm_add] = add_status
