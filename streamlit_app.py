@@ -127,7 +127,6 @@ def load_watchlist_data():
                             details[c_norm] = {
                                 "buy_price": float(v.get("buy_price", 0.0)),
                                 "shares": int(v.get("shares", 0)),
-                                "gain_pct": float(v.get("gain_pct", 20.0)), # 目標上昇率％（デフォルト20%）
                                 "annual_div": float(v.get("annual_div", 0.0))
                             }
                         else:
@@ -136,19 +135,19 @@ def load_watchlist_data():
                             elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
                             else: val = "趣味"
                             tags[c_norm] = val
-                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
+                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
                 elif isinstance(d, list):
                     for c in d:
                         c_norm = norm_c(c)
                         tickers.append(c_norm)
                         tags[c_norm] = "監視"
-                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
+                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
         except Exception:
             pass
     cln = list(dict.fromkeys(tickers))
     for c in cln:
         if c not in tags: tags[c] = "監視"
-        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
+        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
     return cln, tags, details
 
 def save_watchlist_data(tickers, tags, details):
@@ -159,12 +158,11 @@ def save_watchlist_data(tickers, tags, details):
     try:
         data_to_save = {}
         for c in cln:
-            det = details.get(c, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
+            det = details.get(c, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
             data_to_save[c] = {
                 "status": tags.get(c, "監視"),
                 "buy_price": det.get("buy_price", 0.0),
                 "shares": det.get("shares", 0),
-                "gain_pct": det.get("gain_pct", 20.0),
                 "annual_div": det.get("annual_div", 0.0)
             }
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
@@ -177,8 +175,7 @@ if "watchlist" not in st.session_state:
     st.session_state.watchlist = w
     st.session_state.company_tags = t
     st.session_state.portfolio_details = d
-
-@st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
+    @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     sym = get_sym(code)
     st.caption(f"対象銘柄: **{name}** ({sym}) ｜ 分類: **{status}**")
@@ -412,7 +409,6 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "利回り": div_y
         })
     return pd.DataFrame(rows)
-
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
@@ -488,10 +484,21 @@ if not df_all.empty:
         
     st.divider()
 
-    tab_all, tab_watch, tab_hold, tab_hobby, tab_profit = st.tabs(["すべて", "監視", "保有", "趣味", "🎯 利確ライン"])
+    tab_all, tab_watch, tab_hold, tab_hobby, tab_profit = st.tabs(["すべて", "監視", "保有", "趣味", "🎯 釣り合い管理"])
 
-    def style_dataframe(df_target):
-        disp_df = df_target[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
+    def display_sortable_dataframe(df_target, sort_key_prefix, default_sort="コード"):
+        if df_target.empty:
+            st.info("該当する銘柄はありません。")
+            return
+
+        c_s1, c_s2 = st.columns([2, 1])
+        sort_col = c_s1.selectbox("並び替え基準", ["コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"], index=["コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"].index(default_sort) if default_sort in ["コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"] else 0, key=f"s_col_{sort_key_prefix}")
+        order_opt = c_s2.selectbox("順序", ["昇順 (▲)", "降順 (▼)"], index=1 if sort_col in ["現在値", "前日比", "1週", "利回り"] else 0, key=f"s_ord_{sort_key_prefix}")
+        is_ascending = order_opt.startswith("昇順")
+
+        sorted_df = df_target.sort_values(by=sort_col, ascending=is_ascending, na_position='last')
+
+        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
         disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
@@ -528,20 +535,36 @@ if not df_all.empty:
             }
         )
 
-with tab_profit:
-        st.markdown("##### 🎯 保有銘柄の利確ライン＆YOC管理")
-        st.caption("保有銘柄を1つ選択して、取得単価・保有株数・目標上昇率（％）・年間配当金を設定します。利確ラインは「取得単価 ＋ 目標上昇率％」で自動算出されます。")
+    with tab_all:
+        st.markdown("##### 📋 登録銘柄一覧（すべて）")
+        display_sortable_dataframe(df_all, "all", "コード")
+
+    with tab_watch:
+        st.markdown("##### 👀 監視中銘柄")
+        display_sortable_dataframe(df_all[df_all["状態"] == "監視"], "watch", "利回り")
+
+    with tab_hold:
+        st.markdown("##### 💼 保有中銘柄")
+        display_sortable_dataframe(df_all[df_all["状態"] == "保有"], "hold", "コード")
+
+    with tab_hobby:
+        st.markdown("##### 🧪 趣味・研究銘柄")
+        display_sortable_dataframe(df_all[df_all["状態"] == "趣味"], "hobby", "コード")
+
+    with tab_profit:
+        st.markdown("##### ⚖️ 含み益と配当金の釣り合い管理")
+        st.caption("保有銘柄の「評価損益（含み益）」が「年間配当金の何年分に相当するか」を一覧で確認できます。")
         
         hold_codes = df_all[df_all["状態"] == "保有"]["コード"].tolist()
         
         if not hold_codes:
-            st.info("現在、「保有」タブに登録されている銘柄はありません。まずは「保有」タブで銘柄を追加してください。")
+            st.info("現在、「保有」タブに登録されている銘柄はありません。まずは銘柄を追加してください。")
         else:
             if "portfolio_details" not in st.session_state:
                 st.session_state.portfolio_details = {}
 
             edit_options = [f"{hc} - {get_company_name(hc)}" for hc in hold_codes]
-            selected_edit_item = st.selectbox("編集する保有銘柄を選択", edit_options, key="select_profit_edit")
+            selected_edit_item = st.selectbox("個別設定・調整する銘柄を選択", edit_options, key="select_profit_edit")
             
             if selected_edit_item:
                 target_hc = norm_c(selected_edit_item.split(" - ")[0])
@@ -549,25 +572,20 @@ with tab_profit:
                 p_match = df_all[df_all["コード"] == target_hc]
                 cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
 
-                saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
+                saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
                 
                 with st.container(border=True):
                     st.markdown(f"**📌 {target_name} ({target_hc})** ｜ 現在値: `{cur_p:,.1f} 円`")
                     
-                    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                    col_p1, col_p2, col_p3 = st.columns(3)
                     b_price = col_p1.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
                     n_shares = col_p2.number_input("保持株数", min_value=0, value=int(saved_info.get("shares", 0)), step=100, key=f"sh_{target_hc}")
-                    g_pct = col_p3.number_input("目標上昇率 (%)", min_value=-50.0, value=float(saved_info.get("gain_pct", 20.0)), step=1.0, format="%.1f", key=f"gp_{target_hc}")
-                    a_div = col_p4.number_input("年間配当金(1株)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
-                    
-                    auto_target = b_price * (1.0 + g_pct / 100.0) if b_price > 0 else 0.0
-                    st.caption(f"✨ 自動計算される利確ライン: **{auto_target:,.1f} 円** (取得単価 ＋ {g_pct:+.1f}%)")
+                    a_div = col_p3.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
 
                     if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
                         st.session_state.portfolio_details[target_hc] = {
                             "buy_price": b_price,
                             "shares": n_shares,
-                            "gain_pct": g_pct,
                             "annual_div": a_div
                         }
                         save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
@@ -581,52 +599,43 @@ with tab_profit:
                 h_name = get_company_name(hc)
                 p_match = df_all[df_all["コード"] == hc]
                 cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
-                week_p = p_match.iloc[0]["1週"] if not p_match.empty and not pd.isna(p_match.iloc[0]["1週"]) else 0.0
-                ma_dev = p_match.iloc[0]["25日乖離"] if not p_match.empty and not pd.isna(p_match.iloc[0]["25日乖離"]) else 0.0
 
-                det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
+                det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
                 bp = det.get("buy_price", 0.0)
                 sh = det.get("shares", 0)
-                gp = det.get("gain_pct", 20.0)
                 ad = det.get("annual_div", 0.0)
-
-                tp = bp * (1.0 + gp / 100.0) if bp > 0 else 0.0
 
                 p_loss_yen = (cur_p - bp) * sh if bp > 0 and sh > 0 else np.nan
                 p_loss_pct = ((cur_p - bp) / bp) * 100 if bp > 0 else np.nan
-                target_progress = (cur_p / tp) * 100 if tp > 0 else np.nan
+                annual_div_total = ad * sh if ad > 0 and sh > 0 else np.nan
                 yoc = (ad / bp) * 100 if bp > 0 and ad > 0 else np.nan
-                target_div_yield = (ad / tp) * 100 if tp > 0 and ad > 0 else np.nan
-                div_multiple = (cur_p - bp) / ad if bp > 0 and ad > 0 else np.nan
-
-                status_icon = "🟢 通常"
-                if tp > 0 and cur_p >= tp:
-                    status_icon = "🔴 要確認(利確到達)"
-                elif tp > 0 and cur_p >= tp * 0.95:
-                    status_icon = "🟡 上昇警戒(利確接近)"
-                elif week_p >= 6.0 or ma_dev >= 7.0:
-                    status_icon = "🟡 上昇警戒(急騰・過熱)"
-                elif week_p <= -5.0 or ma_dev <= -5.0:
-                    status_icon = "🔵 下落警戒(急落・乖離)"
+                
+                # 含み益の配当倍率（含み益 ÷ 年間配当総額）
+                div_multiple = p_loss_yen / annual_div_total if p_loss_yen is not np.nan and annual_div_total is not np.nan and annual_div_total > 0 else np.nan
 
                 profit_rows.append({
-                    "状態": status_icon,
                     "コード": hc,
                     "銘柄名": h_name,
                     "現在値": cur_p,
                     "取得単価": bp if bp > 0 else np.nan,
-                    "利確ライン": tp if tp > 0 else np.nan,
-                    "達成率": target_progress,
                     "評価損益": p_loss_yen,
                     "損益率": p_loss_pct,
+                    "年間配当総額": annual_div_total,
                     "YOC(取得利回り)": yoc,
-                    "到達時利回り": target_div_yield,
                     "配当倍率": div_multiple
                 })
 
             if profit_rows:
                 pdf = pd.DataFrame(profit_rows)
-                st.markdown("##### 📊 利確判断・保有ステータス一覧")
+                
+                c_ps1, c_ps2 = st.columns([2, 1])
+                p_sort_col = c_ps1.selectbox("釣り合い一覧の並び替え基準", ["コード", "銘柄名", "現在値", "評価損益", "損益率", "年間配当総額", "YOC(取得利回り)", "配当倍率"], index=7, key="ps_col")
+                p_order_opt = c_ps2.selectbox("順序", ["昇順 (▲)", "降順 (▼)"], index=1, key="ps_ord")
+                p_ascending = p_order_opt.startswith("昇順")
+
+                sorted_pdf = pdf.sort_values(by=p_sort_col, ascending=p_ascending, na_position='last')
+
+                st.markdown("##### 📊 評価損益 ✕ 配当金の釣り合い一覧")
                 
                 def color_profit_cells(v):
                     if pd.isna(v): return ''
@@ -635,17 +644,15 @@ with tab_profit:
                         elif v < 0: return 'color: #60a5fa; font-weight: 600;'
                     return ''
 
-                p_styler = pdf.style
+                p_styler = sorted_pdf.style
                 p_map_fn = p_styler.map if hasattr(p_styler, 'map') else p_styler.applymap
                 p_styled = p_map_fn(color_profit_cells, subset=['損益率', '評価損益']).format({
                     '現在値': '{:,.1f} 円',
                     '取得単価': '{:,.1f} 円',
-                    '利確ライン': '{:,.1f} 円',
-                    '達成率': '{:.1f}%',
                     '評価損益': '{:+,.0f} 円',
                     '損益率': '{:+.2f}%',
+                    '年間配当総額': '{:,.0f} 円',
                     'YOC(取得利回り)': '{:.2f}%',
-                    '到達時利回り': '{:.2f}%',
                     '配当倍率': '{:.1f}年分'
                 }, na_rep='-')
 
@@ -654,17 +661,71 @@ with tab_profit:
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "状態": st.column_config.TextColumn("判定", width="small"),
                         "コード": st.column_config.TextColumn("コード", width="small"),
                         "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
                         "現在値": st.column_config.NumberColumn("現在値"),
                         "取得単価": st.column_config.NumberColumn("取得単価"),
-                        "利確ライン": st.column_config.NumberColumn("利確ライン"),
-                        "達成率": st.column_config.NumberColumn("目標達成率"),
                         "評価損益": st.column_config.NumberColumn("評価損益"),
                         "損益率": st.column_config.NumberColumn("損益率"),
-                        "YOC(取得利回り)": st.column_config.NumberColumn("取得利回り"),
-                        "到達時利回り": st.column_config.NumberColumn("到達時利回り"),
-                        "配当倍率": st.column_config.NumberColumn("含み益配当倍率"),
+                        "年間配当総額": st.column_config.NumberColumn("年間配当総額"),
+                        "YOC(取得利回り)": st.column_config.NumberColumn("YOC"),
+                        "配当倍率": st.column_config.NumberColumn("配当何年分（含み益÷年間配当）"),
                     }
                 )
+
+st.sidebar.header("⚙️ 銘柄管理")
+with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
+    add_mode = st.radio("入力方法", ["マスターから選択", "コード直接入力"], horizontal=True)
+    sel_code = ""
+    if add_mode == "マスターから選択":
+        chosen_opt = st.selectbox("銘柄検索", jpx_options if jpx_options else ["マスター未読込"])
+        if chosen_opt and " - " in chosen_opt:
+            sel_code = chosen_opt.split(" - ")[0]
+    else:
+        sel_code = st.text_input("4桁または証券コード", "").strip()
+
+    add_status = st.selectbox("登録分類", STATUS_OPTS)
+    if st.button("追加する", type="primary"):
+        if sel_code:
+            norm_add = norm_c(sel_code)
+            if norm_add not in st.session_state.watchlist:
+                st.session_state.watchlist.append(norm_add)
+                st.session_state.company_tags[norm_add] = add_status
+                if norm_add not in st.session_state.portfolio_details:
+                    st.session_state.portfolio_details[norm_add] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
+                save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+                st.success(f"{norm_add} を追加しました！")
+                st.rerun()
+            else:
+                st.warning("すでに登録されています。")
+
+with st.sidebar.expander("🗑️ 銘柄の削除・変更", expanded=False):
+    if st.session_state.watchlist:
+        del_target = st.selectbox("対象銘柄", st.session_state.watchlist, key="del_sel")
+        new_tag = st.selectbox("分類変更", STATUS_OPTS, index=STATUS_OPTS.index(st.session_state.company_tags.get(del_target, "監視")) if st.session_state.company_tags.get(del_target, "監視") in STATUS_OPTS else 0, key="tag_chg")
+        
+        c_b1, c_b2 = st.columns(2)
+        if c_b1.button("分類を更新"):
+            st.session_state.company_tags[del_target] = new_tag
+            save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+            st.success("更新しました！")
+            st.rerun()
+        if c_b2.button("削除する", type="primary"):
+            st.session_state.watchlist.remove(del_target)
+            if del_target in st.session_state.company_tags: del st.session_state.company_tags[del_target]
+            if del_target in st.session_state.portfolio_details: del st.session_state.portfolio_details[del_target]
+            save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+            st.success("削除しました！")
+            st.rerun()
+    else:
+        st.info("登録銘柄がありません。")
+
+with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
+    if st.session_state.watchlist:
+        diag_target = st.selectbox("診断対象", st.session_state.watchlist, key="diag_sel")
+        diag_name = get_company_name(diag_target)
+        diag_status = st.session_state.company_tags.get(diag_target, "監視")
+        if st.button("📊 この銘柄を診断する", type="primary", use_container_width=True):
+            show_detail_dialog(diag_target, diag_name, diag_status)
+    else:
+        st.info("登録銘柄がありません。")
