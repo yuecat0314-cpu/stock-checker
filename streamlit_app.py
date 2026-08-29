@@ -410,6 +410,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "利回り": div_y
         })
     return pd.DataFrame(rows)
+
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
@@ -611,7 +612,6 @@ if not df_all.empty:
                 annual_div_total = ad * sh if ad > 0 and sh > 0 else np.nan
                 yoc = (ad / bp) * 100 if bp > 0 and ad > 0 else np.nan
                 
-                # 含み益の配当倍率（含み益 ÷ 年間配当総額）
                 div_multiple = p_loss_yen / annual_div_total if p_loss_yen is not np.nan and annual_div_total is not np.nan and annual_div_total > 0 else np.nan
 
                 profit_rows.append({
