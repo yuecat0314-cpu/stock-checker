@@ -177,7 +177,8 @@ if "watchlist" not in st.session_state:
     st.session_state.watchlist = w
     st.session_state.company_tags = t
     st.session_state.portfolio_details = d
-    @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
+    
+@st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     sym = get_sym(code)
     st.caption(f"対象銘柄: **{name}** ({sym}) ｜ 分類: **{status}**")
