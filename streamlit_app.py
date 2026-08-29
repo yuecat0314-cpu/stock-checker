@@ -575,20 +575,25 @@ if not df_all.empty:
                 p_match = df_all[df_all["コード"] == target_hc]
                 cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
 
-                saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
+                saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
                 
                 with st.container(border=True):
                     st.markdown(f"**📌 {target_name} ({target_hc})** ｜ 現在値: `{cur_p:,.1f} 円`")
                     
-                    col_p1, col_p2, col_p3 = st.columns(3)
+                    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
                     b_price = col_p1.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
                     n_shares = col_p2.number_input("保持株数", min_value=0, value=int(saved_info.get("shares", 0)), step=100, key=f"sh_{target_hc}")
-                    a_div = col_p3.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
+                    g_pct = col_p3.number_input("目標上昇率 (%)", min_value=-50.0, value=float(saved_info.get("gain_pct", 20.0)), step=1.0, format="%.1f", key=f"gp_{target_hc}")
+                    a_div = col_p4.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
+                    
+                    auto_target = b_price * (1.0 + g_pct / 100.0) if b_price > 0 else 0.0
+                    st.caption(f"✨ 自動計算される利確ライン: **{auto_target:,.1f} 円** (取得単価 ＋ {g_pct:+.1f}%)")
 
                     if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
                         st.session_state.portfolio_details[target_hc] = {
                             "buy_price": b_price,
                             "shares": n_shares,
+                            "gain_pct": g_pct,
                             "annual_div": a_div
                         }
                         save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
@@ -602,11 +607,16 @@ if not df_all.empty:
                 h_name = get_company_name(hc)
                 p_match = df_all[df_all["コード"] == hc]
                 cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
+                week_p = p_match.iloc[0]["1週"] if not p_match.empty and not pd.isna(p_match.iloc[0]["1週"]) else 0.0
+                ma_dev = p_match.iloc[0]["25日乖離"] if not p_match.empty and not pd.isna(p_match.iloc[0]["25日乖離"]) else 0.0
 
-                det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
+                det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
                 bp = det.get("buy_price", 0.0)
                 sh = det.get("shares", 0)
+                gp = det.get("gain_pct", 20.0)
                 ad = det.get("annual_div", 0.0)
+
+                tp = bp * (1.0 + gp / 100.0) if bp > 0 else 0.0
 
                 p_loss_yen = (cur_p - bp) * sh if bp > 0 and sh > 0 else np.nan
                 p_loss_pct = ((cur_p - bp) / bp) * 100 if bp > 0 else np.nan
@@ -615,7 +625,24 @@ if not df_all.empty:
                 
                 div_multiple = p_loss_yen / annual_div_total if p_loss_yen is not np.nan and annual_div_total is not np.nan and annual_div_total > 0 else np.nan
 
+                # --- 状態アイコン判定ロジック (優先順位: 🔴 > 🟡 > 🔵 > 🟢) ---
+                status_icon = "🟢 通常"
+                is_target_reached = (tp > 0 and cur_p >= tp)
+                is_near_target = (tp > 0 and cur_p >= tp * 0.95)
+                is_overheated = (week_p >= 6.0 or ma_dev >= 7.0)
+                is_downturn = (week_p <= -5.0 or ma_dev <= -5.0)
+
+                if is_target_reached or is_overheated:
+                    status_icon = "🔴 要確認"
+                elif is_near_target or week_p >= 4.0 or ma_dev >= 4.0:
+                    status_icon = "🟡 上昇・利確接近警戒"
+                elif is_downturn:
+                    status_icon = "🔵 下落・原因確認"
+                else:
+                    status_icon = "🟢 通常"
+
                 profit_rows.append({
+                    "状態": status_icon,
                     "コード": hc,
                     "銘柄名": h_name,
                     "現在値": cur_p,
@@ -631,7 +658,7 @@ if not df_all.empty:
                 pdf = pd.DataFrame(profit_rows)
                 
                 c_ps1, c_ps2 = st.columns([2, 1])
-                p_sort_col = c_ps1.selectbox("釣り合い一覧の並び替え基準", ["コード", "銘柄名", "現在値", "評価損益", "損益率", "年間配当総額", "YOC(取得利回り)", "配当何年分"], index=7, key="ps_col")
+                p_sort_col = c_ps1.selectbox("釣り合い一覧の並び替え基準", ["状態", "コード", "銘柄名", "現在値", "評価損益", "損益率", "年間配当総額", "YOC(取得利回り)", "配当何年分"], index=8, key="ps_col")
                 p_order_opt = c_ps2.selectbox("順序", ["昇順 (▲)", "降順 (▼)"], index=1, key="ps_ord")
                 p_ascending = p_order_opt.startswith("昇順")
 
@@ -663,6 +690,7 @@ if not df_all.empty:
                     use_container_width=False,
                     hide_index=True,
                     column_config={
+                        "状態": st.column_config.TextColumn("状態", width="small"),
                         "コード": st.column_config.TextColumn("コード", width="small"),
                         "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
                         "現在値": st.column_config.NumberColumn("現在値", width="small"),
@@ -694,7 +722,7 @@ with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
                 st.session_state.watchlist.append(norm_add)
                 st.session_state.company_tags[norm_add] = add_status
                 if norm_add not in st.session_state.portfolio_details:
-                    st.session_state.portfolio_details[norm_add] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
+                    st.session_state.portfolio_details[norm_add] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
                 save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
                 st.success(f"{norm_add} を追加しました！")
                 st.rerun()
