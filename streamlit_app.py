@@ -34,7 +34,6 @@ jpx_options = []
 if not jpx_df.empty:
     for _, row in jpx_df.iterrows():
         c_raw = str(row["銘柄コード"]).strip()
-        # 5桁などになってしまわないよう、先頭4文字を基本コードとして正規化
         c_4 = norm_c(c_raw)[:4]
         n_val = str(row["銘柄名称"]).strip()
         jpx_options.append(f"{c_4} - {n_val}")
@@ -177,7 +176,7 @@ if "watchlist" not in st.session_state:
     st.session_state.watchlist = w
     st.session_state.company_tags = t
     st.session_state.portfolio_details = d
-    
+
 @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     sym = get_sym(code)
@@ -525,17 +524,17 @@ if not df_all.empty:
         
         st.dataframe(
             styled,
-            use_container_width=True,
+            use_container_width=False,
             hide_index=True,
             column_config={
                 "状態": st.column_config.TextColumn("所属", width="small"),
                 "コード": st.column_config.TextColumn("コード", width="small"),
                 "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
-                "現在値": st.column_config.NumberColumn("現在値"),
-                "前日比": st.column_config.NumberColumn("前日比"),
-                "1週": st.column_config.NumberColumn("1週騰落"),
-                "25日乖離": st.column_config.NumberColumn("25日乖離"),
-                "利回り": st.column_config.TextColumn("利回り"),
+                "現在値": st.column_config.NumberColumn("現在値", width="small"),
+                "前日比": st.column_config.NumberColumn("前日比", width="small"),
+                "1週": st.column_config.NumberColumn("1週騰落", width="small"),
+                "25日乖離": st.column_config.NumberColumn("25日乖離", width="small"),
+                "利回り": st.column_config.TextColumn("利回り", width="small"),
             }
         )
 
@@ -625,14 +624,14 @@ if not df_all.empty:
                     "損益率": p_loss_pct,
                     "年間配当総額": annual_div_total,
                     "YOC(取得利回り)": yoc,
-                    "配当倍率": div_multiple
+                    "配当何年分": div_multiple
                 })
 
             if profit_rows:
                 pdf = pd.DataFrame(profit_rows)
                 
                 c_ps1, c_ps2 = st.columns([2, 1])
-                p_sort_col = c_ps1.selectbox("釣り合い一覧の並び替え基準", ["コード", "銘柄名", "現在値", "評価損益", "損益率", "年間配当総額", "YOC(取得利回り)", "配当倍率"], index=7, key="ps_col")
+                p_sort_col = c_ps1.selectbox("釣り合い一覧の並び替え基準", ["コード", "銘柄名", "現在値", "評価損益", "損益率", "年間配当総額", "YOC(取得利回り)", "配当何年分"], index=7, key="ps_col")
                 p_order_opt = c_ps2.selectbox("順序", ["昇順 (▲)", "降順 (▼)"], index=1, key="ps_ord")
                 p_ascending = p_order_opt.startswith("昇順")
 
@@ -654,25 +653,25 @@ if not df_all.empty:
                     '取得単価': '{:,.1f} 円',
                     '評価損益': '{:+,.0f} 円',
                     '損益率': '{:+.2f}%',
-                    '年間配add総額': '{:,.0f} 円',
+                    '年間配当総額': '{:,.0f} 円',
                     'YOC(取得利回り)': '{:.2f}%',
-                    '配当倍率': '{:.1f}年分'
+                    '配当何年分': '{:.1f}年分'
                 }, na_rep='-')
 
                 st.dataframe(
                     p_styled,
-                    use_container_width=True,
+                    use_container_width=False,
                     hide_index=True,
                     column_config={
                         "コード": st.column_config.TextColumn("コード", width="small"),
                         "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
-                        "現在値": st.column_config.NumberColumn("現在値"),
-                        "取得単価": st.column_config.NumberColumn("取得単価"),
-                        "評価損益": st.column_config.NumberColumn("評価損益"),
-                        "損益率": st.column_config.NumberColumn("損益率"),
-                        "年間配当総額": st.column_config.NumberColumn("年間配当総額"),
-                        "YOC(取得利回り)": st.column_config.NumberColumn("YOC"),
-                        "配当倍率": st.column_config.NumberColumn("配当何年分（含み益÷年間配当）"),
+                        "現在値": st.column_config.NumberColumn("現在値", width="small"),
+                        "取得単価": st.column_config.NumberColumn("取得単価", width="small"),
+                        "評価損益": st.column_config.NumberColumn("評価損益", width="small"),
+                        "損益率": st.column_config.NumberColumn("損益率", width="small"),
+                        "年間配当総額": st.column_config.NumberColumn("年間配当総額", width="small"),
+                        "YOC(取得利回り)": st.column_config.NumberColumn("YOC", width="small"),
+                        "配当何年分": st.column_config.NumberColumn("配当何年分", width="small"),
                     }
                 )
 
