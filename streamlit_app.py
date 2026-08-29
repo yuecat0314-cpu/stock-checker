@@ -31,12 +31,15 @@ def load_jpx_master():
 jpx_df = load_jpx_master()
 
 jpx_options = []
+jpx_options_dict = {}
 if not jpx_df.empty:
     for _, row in jpx_df.iterrows():
         c_raw = str(row["銘柄コード"]).strip()
         c_4 = norm_c(c_raw)[:4]
         n_val = str(row["銘柄名称"]).strip()
-        jpx_options.append(f"{c_4} - {n_val}")
+        opt_str = f"{c_4} - {n_val}"
+        jpx_options.append(opt_str)
+        jpx_options_dict[c_4] = opt_str
 
 def get_sym(code):
     clean_c = norm_c(code)
@@ -128,6 +131,7 @@ def load_watchlist_data():
                             details[c_norm] = {
                                 "buy_price": float(v.get("buy_price", 0.0)),
                                 "shares": int(v.get("shares", 0)),
+                                "gain_pct": float(v.get("gain_pct", 20.0)),
                                 "annual_div": float(v.get("annual_div", 0.0))
                             }
                         else:
@@ -136,19 +140,19 @@ def load_watchlist_data():
                             elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
                             else: val = "趣味"
                             tags[c_norm] = val
-                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
+                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
                 elif isinstance(d, list):
                     for c in d:
                         c_norm = norm_c(c)[:4]
                         tickers.append(c_norm)
                         tags[c_norm] = "監視"
-                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
+                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
         except Exception:
             pass
     cln = list(dict.fromkeys(tickers))
     for c in cln:
         if c not in tags: tags[c] = "監視"
-        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "annual_div": 0.0}
+        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
     return cln, tags, details
 
 def save_watchlist_data(tickers, tags, details):
@@ -159,11 +163,12 @@ def save_watchlist_data(tickers, tags, details):
     try:
         data_to_save = {}
         for c in cln:
-            det = details.get(c, {"buy_price": 0.0, "shares": 0, "annual_div": 0.0})
+            det = details.get(c, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
             data_to_save[c] = {
                 "status": tags.get(c, "監視"),
                 "buy_price": det.get("buy_price", 0.0),
                 "shares": det.get("shares", 0),
+                "gain_pct": det.get("gain_pct", 20.0),
                 "annual_div": det.get("annual_div", 0.0)
             }
         with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
@@ -275,14 +280,15 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
             div_y, annual_d, hist_actual_d, source_type, warn_div = get_dividend_data(code, info, cur_p, ticker_obj=t)
 
             b_scores, b_descs = {}, {}
+            safe_ma25_dev = float(ma25_dev) if ma25_dev is not None and not pd.isna(ma25_dev) else None
+
             if not hist.empty and len(hist) >= 25:
                 ma25 = hist["Close"].rolling(25).mean().iloc[-1]
-                ma25_dev_val = ((cur_p - ma25) / ma25) * 100
-                b_scores['25日乖離'] = 100 if ma25_dev_val <= -5 else (85 if ma25_dev_val <= -2 else (65 if ma25_dev <= 2 else (45 if ma25_dev <= 6 else 20)))
-                b_descs['25日乖離'] = f"{ma25_dev_val:+.1f}%"
-            elif ma25_dev is not None and not pd.isna(ma25_dev):
-                b_scores['25日乖離'] = 100 if ma25_dev <= -5 else (85 if ma25_dev <= -2 else (65 if ma25_dev <= 2 else (45 if ma25_dev <= 6 else 20)))
-                b_descs['25日乖離'] = f"{ma25_dev:+.1f}%"
+                safe_ma25_dev = ((cur_p - ma25) / ma25) * 100
+
+            if safe_ma25_dev is not None:
+                b_scores['25日乖離'] = 100 if safe_ma25_dev <= -5 else (85 if safe_ma25_dev <= -2 else (65 if safe_ma25_dev <= 2 else (45 if safe_ma25_dev <= 6 else 20)))
+                b_descs['25日乖離'] = f"{safe_ma25_dev:+.1f}%"
 
             if not hist.empty and "High" in hist.columns:
                 high_52w = float(hist["High"].max())
@@ -625,7 +631,6 @@ if not df_all.empty:
                 
                 div_multiple = p_loss_yen / annual_div_total if p_loss_yen is not np.nan and annual_div_total is not np.nan and annual_div_total > 0 else np.nan
 
-                # --- 状態アイコン判定ロジック (優先順位: 🔴 > 🟡 > 🔵 > 🟢) ---
                 status_icon = "🟢 通常"
                 is_target_reached = (tp > 0 and cur_p >= tp)
                 is_near_target = (tp > 0 and cur_p >= tp * 0.95)
@@ -706,56 +711,87 @@ if not df_all.empty:
 st.sidebar.header("⚙️ 銘柄管理")
 with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
     add_mode = st.radio("入力方法", ["マスターから選択", "コード直接入力"], horizontal=True)
-    sel_code = ""
+    sel_codes = []
     if add_mode == "マスターから選択":
-        chosen_opt = st.selectbox("銘柄検索", jpx_options if jpx_options else ["マスター未読込"])
-        if chosen_opt and " - " in chosen_opt:
-            sel_code = chosen_opt.split(" - ")[0]
+        chosen_opts = st.multiselect("銘柄検索・選択（複数可）", jpx_options if jpx_options else ["マスター未読込"], key="add_multiselect")
+        if chosen_opts:
+            sel_codes = [opt.split(" - ")[0] for opt in chosen_opts]
     else:
-        sel_code = st.text_input("4桁または証券コード", "").strip()
+        raw_input_text = st.text_input("4桁コード（カンマ区切り等で複数可）", "").strip()
+        if raw_input_text:
+            import re
+            sel_codes = [c.strip() for c in re.split(r'[,,\s]+', raw_input_text) if c.strip()]
 
-    add_status = st.selectbox("登録分類", STATUS_OPTS)
+    add_status = st.selectbox("登録分類", STATUS_OPTS, key="add_status_box")
     if st.button("追加する", type="primary"):
-        if sel_code:
-            norm_add = norm_c(sel_code)[:4]
-            if norm_add not in st.session_state.watchlist:
-                st.session_state.watchlist.append(norm_add)
-                st.session_state.company_tags[norm_add] = add_status
-                if norm_add not in st.session_state.portfolio_details:
-                    st.session_state.portfolio_details[norm_add] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
+        if sel_codes:
+            added_count = 0
+            for sc in sel_codes:
+                norm_add = norm_c(sc)[:4]
+                if norm_add and norm_add not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(norm_add)
+                    st.session_state.company_tags[norm_add] = add_status
+                    if norm_add not in st.session_state.portfolio_details:
+                        st.session_state.portfolio_details[norm_add] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
+                    added_count += 1
+            if added_count > 0:
                 save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
-                st.success(f"{norm_add} を追加しました！")
+                st.success(f"{added_count}件の銘柄を追加しました！")
                 st.rerun()
             else:
-                st.warning("すでに登録されています。")
+                st.warning("追加対象が指定されていないか、すでにすべて登録されています。")
+        else:
+            st.warning("追加する銘柄を選択または入力してください。")
 
 with st.sidebar.expander("🗑️ 銘柄の削除・変更", expanded=False):
     if st.session_state.watchlist:
-        del_target = st.selectbox("対象銘柄", st.session_state.watchlist, key="del_sel")
-        new_tag = st.selectbox("分類変更", STATUS_OPTS, index=STATUS_OPTS.index(st.session_state.company_tags.get(del_target, "監視")) if st.session_state.company_tags.get(del_target, "監視") in STATUS_OPTS else 0, key="tag_chg")
+        watch_options = [f"{c} - {get_company_name(c)}" for c in st.session_state.watchlist]
+        del_chosen = st.multiselect("対象銘柄選択（複数可）", watch_options, key="del_multiselect")
+        new_tag = st.selectbox("分類変更（一括）", STATUS_OPTS, key="tag_chg_box")
         
         c_b1, c_b2 = st.columns(2)
         if c_b1.button("分類を更新"):
-            st.session_state.company_tags[del_target] = new_tag
-            save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
-            st.success("更新しました！")
-            st.rerun()
+            if del_chosen:
+                up_count = 0
+                for item in del_chosen:
+                    t_code = norm_c(item.split(" - ")[0])[:4]
+                    if t_code in st.session_state.watchlist:
+                        st.session_state.company_tags[t_code] = new_tag
+                        up_count += 1
+                save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+                st.success(f"{up_count}件の分類を更新しました！")
+                st.rerun()
+            else:
+                st.warning("対象の銘柄を選択してください。")
         if c_b2.button("削除する", type="primary"):
-            st.session_state.watchlist.remove(del_target)
-            if del_target in st.session_state.company_tags: del st.session_state.company_tags[del_target]
-            if del_target in st.session_state.portfolio_details: del st.session_state.portfolio_details[del_target]
-            save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
-            st.success("削除しました！")
-            st.rerun()
+            if del_chosen:
+                del_count = 0
+                for item in del_chosen:
+                    t_code = norm_c(item.split(" - ")[0])[:4]
+                    if t_code in st.session_state.watchlist:
+                        st.session_state.watchlist.remove(t_code)
+                        if t_code in st.session_state.company_tags: del st.session_state.company_tags[t_code]
+                        if t_code in st.session_state.portfolio_details: del st.session_state.portfolio_details[t_code]
+                        del_count += 1
+                save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+                st.success(f"{del_count}件の銘柄を削除しました！")
+                st.rerun()
+            else:
+                st.warning("削除する銘柄を選択してください。")
     else:
         st.info("登録銘柄がありません。")
 
 with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
     if st.session_state.watchlist:
-        diag_target = st.selectbox("診断対象", st.session_state.watchlist, key="diag_sel")
-        diag_name = get_company_name(diag_target)
-        diag_status = st.session_state.company_tags.get(diag_target, "監視")
-        if st.button("📊 この銘柄を診断する", type="primary", use_container_width=True):
-            show_detail_dialog(diag_target, diag_name, diag_status)
+        diag_options = [f"{c} - {get_company_name(c)}" for c in st.session_state.watchlist]
+        diag_target_opt = st.selectbox("診断対象", diag_options, key="diag_sel_box")
+        if diag_target_opt:
+            diag_target = norm_c(diag_target_opt.split(" - ")[0])[:4]
+            diag_name = get_company_name(diag_target)
+            diag_status = st.session_state.company_tags.get(diag_target, "監視")
+            if st.button("📊 この銘柄を診断する", type="primary", use_container_width=True):
+                show_detail_dialog(diag_target, diag_name, diag_status)
     else:
         st.info("登録銘柄がありません。")
+
+
