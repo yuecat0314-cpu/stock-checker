@@ -412,7 +412,8 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "利回り": div_y
         })
     return pd.DataFrame(rows)
-    c_t, c_r = st.columns([3, 1])
+    
+c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
     with st.spinner("株価データ更新中..."):
