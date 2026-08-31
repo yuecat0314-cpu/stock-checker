@@ -6,6 +6,8 @@ from datetime import datetime
 import pytz
 import json
 import os
+import re
+import plotly.graph_objects as go
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -56,7 +58,7 @@ if "watchlist" not in st.session_state:
     st.session_state.portfolio_details = details
 
 # -------------------------------------------------------------------------
-# マスター読込
+# マスター読込（文字コード自動判定 ＆ エラー可視化対応版）
 # -------------------------------------------------------------------------
 @st.cache_data
 def load_jpx_master():
@@ -80,6 +82,24 @@ def load_jpx_master():
             
     st.error(f"❌ `jpx_master.csv` の読込に失敗しました。\n詳細な原因: {last_error}")
     return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
+
+jpx_df = load_jpx_master()
+jpx_options = jpx_df["オプション表示"].tolist() if not jpx_df.empty else []
+
+def get_company_name(code):
+    clean_c = str(code).zfill(4)[:4]
+    if not jpx_df.empty:
+        match = jpx_df[jpx_df["コード"] == clean_c]
+        if not match.empty:
+            return match.iloc[0]["銘柄名"]
+    return f"銘柄-{clean_c}"
+
+def norm_c(c):
+    return str(c).strip().zfill(4)[:4]
+
+def get_sym(code):
+    c_str = norm_c(code)
+    return f"{c_str}.T"
 
 # -------------------------------------------------------------------------
 # 配当データ取得ヘルパー
@@ -296,7 +316,6 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
-            import plotly.graph_objects as go
             fig = go.Figure(go.Scatterpolar(r=chart_scores + [chart_scores[0]], theta=cats + [cats[0]], fill='toself', fillcolor='rgba(14,165,233,0.25)', line=dict(color='#0284c7', width=2)))
             fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, height=190, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
@@ -340,7 +359,6 @@ def fetch_watchlist_data_memory(tickers_tuple):
                 if not single.empty and len(single) >= 2: df = single
             
             if not df.empty:
-                # カラムの平坦化・探索（MultiIndex対応）
                 if isinstance(df.columns, pd.MultiIndex):
                     close_series = None
                     for col in df.columns:
@@ -673,7 +691,7 @@ if not df_all.empty:
                 )
 
 # -------------------------------------------------------------------------
-# サイドバー管理 ＆ バックアップ機能追加
+# サイドバー管理 ＆ 設定のバックアップ・復元
 # -------------------------------------------------------------------------
 st.sidebar.header("⚙️ 銘柄管理")
 with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
@@ -686,7 +704,6 @@ with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
     else:
         raw_input_text = st.text_input("4桁コード（カンマ区切り等で複数可）", "").strip()
         if raw_input_text:
-            import re
             sel_codes = [c.strip() for c in re.split(r'[,,\s]+', raw_input_text) if c.strip()]
 
     add_status = st.selectbox("登録分類", STATUS_OPTS, key="add_status_box")
@@ -761,9 +778,6 @@ with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
     else:
         st.info("登録銘柄がありません。")
 
-# -------------------------------------------------------------------------
-# 設定のバックアップ・復元（エクスポート／インポート）
-# -------------------------------------------------------------------------
 with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=False):
     st.caption("クラウド環境の再起動等によるデータ消失に備え、設定をファイルとして保存・復元できます。")
     
