@@ -109,6 +109,34 @@ def get_sym(code):
     return f"{c_str}.T"
 
 # -------------------------------------------------------------------------
+# yfinance 個別リクエストのキャッシュ層
+# （同じ銘柄への .info / .dividends / .history 個別取得を、TTL内は使い回して
+# 　Yahoo Financeへの通信回数と待ち時間を削減する）
+# -------------------------------------------------------------------------
+YF_CACHE_TTL = 600  # 秒（10分）。頻繁に変わらない情報なのでこの程度で十分。
+
+@st.cache_data(ttl=YF_CACHE_TTL, show_spinner=False)
+def get_ticker_info_cached(sym):
+    try:
+        return yf.Ticker(sym).info
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=YF_CACHE_TTL, show_spinner=False)
+def get_ticker_dividends_cached(sym):
+    try:
+        return yf.Ticker(sym).dividends
+    except Exception:
+        return pd.Series(dtype=float)
+
+@st.cache_data(ttl=YF_CACHE_TTL, show_spinner=False)
+def get_ticker_history_cached(sym, period="1mo"):
+    try:
+        return yf.Ticker(sym).history(period=period, auto_adjust=False)
+    except Exception:
+        return pd.DataFrame()
+
+# -------------------------------------------------------------------------
 # 配当データ取得ヘルパー
 # -------------------------------------------------------------------------
 def get_dividend_data(code, info, cur_p, ticker_obj=None):
@@ -122,8 +150,9 @@ def get_dividend_data(code, info, cur_p, ticker_obj=None):
         if raw_r is not None and not pd.isna(raw_r) and float(raw_r) > 0:
             annual_d = float(raw_r)
 
-        t = ticker_obj if ticker_obj else yf.Ticker(get_sym(code))
-        divs = t.dividends
+        # ticker_objが渡されていても、配当履歴自体はキャッシュ経由で取得する
+        # （同一銘柄への .dividends 個別リクエストを重複させないため）
+        divs = get_ticker_dividends_cached(get_sym(code))
         if not divs.empty:
             yearly_divs = divs.resample("YE").sum().dropna()
             if not yearly_divs.empty:
@@ -151,7 +180,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     with st.spinner("財務データおよびテクニカル指標を多角解析中..."):
         try:
             t = yf.Ticker(sym)
-            info = t.info
+            info = get_ticker_info_cached(sym)
             inc = t.financials
             bal = t.balance_sheet
             cf = t.cashflow
@@ -360,9 +389,8 @@ def fetch_watchlist_data_memory(tickers_tuple):
                 elif sym in data:
                     df = data[sym]
             
-            t_obj = yf.Ticker(sym)
             if df.empty or len(df.dropna(how="all")) < 2:
-                single = t_obj.history(period="1mo", auto_adjust=False)
+                single = get_ticker_history_cached(sym, period="1mo")
                 if not single.empty and len(single) >= 2: df = single
             
             if not df.empty:
@@ -390,7 +418,8 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     ma25 = float(cl.rolling(25).mean().iloc[-1]) if len(cl) >= 25 else float(cl.mean())
                     ma25_dev = ((cur_p - ma25) / ma25) * 100
 
-            div_y, _, _, _, _ = get_dividend_data(c, t_obj.info, cur_p, ticker_obj=t_obj)
+            info_cached = get_ticker_info_cached(sym)
+            div_y, _, _, _, _ = get_dividend_data(c, info_cached, cur_p)
         except Exception:
             pass
         rows.append({
