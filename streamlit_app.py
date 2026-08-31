@@ -1,187 +1,129 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import json, os, unicodedata
+import yfinance as yf
 from datetime import datetime
 import pytz
+import json
+import os
 
-st.set_page_config(page_title="高配当株 監視＆3軸診断", layout="wide", page_icon="📈")
-WATCHLIST_FILE = "watchlist.json"
-JPX_MASTER_FILE = "jpx_master.csv"
-JST = pytz.timezone('Asia/Tokyo')
+JST = pytz.timezone("Asia/Tokyo")
 
+st.set_page_config(
+    page_title="高配当株 監視ダッシュボード",
+    page_icon="📈",
+    layout="wide"
+)
+
+# -------------------------------------------------------------------------
+# データ永続化・管理関数
+# -------------------------------------------------------------------------
+DATA_FILE = "watchlist.json"
 STATUS_OPTS = ["監視", "保有", "趣味"]
 
-def norm_c(c):
-    return unicodedata.normalize("NFKC", str(c)).strip().upper()
+def load_watchlist_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data, {c: "監視" for c in data}, {}
+                elif isinstance(data, dict):
+                    wl = data.get("watchlist", [])
+                    tags = data.get("company_tags", {c: "監視" for c in wl})
+                    details = data.get("portfolio_details", {})
+                    return wl, tags, details
+        except Exception:
+            pass
+    return ["1414", "5253"], {"1414": "監視", "5253": "監視"}, {}
 
+def save_watchlist_data(watchlist, company_tags, portfolio_details):
+    data = {
+        "watchlist": watchlist,
+        "company_tags": company_tags,
+        "portfolio_details": portfolio_details
+    }
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"データ保存エラー: {e}")
+
+if "watchlist" not in st.session_state:
+    wl, tags, details = load_watchlist_data()
+    st.session_state.watchlist = wl
+    st.session_state.company_tags = tags
+    st.session_state.portfolio_details = details
+
+# -------------------------------------------------------------------------
+# マスター読込
+# -------------------------------------------------------------------------
 @st.cache_data
 def load_jpx_master():
-    if os.path.exists(JPX_MASTER_FILE):
+    if os.path.exists("jpx_master.csv"):
         try:
-            df = pd.read_csv(JPX_MASTER_FILE, dtype={"銘柄コード": str})
-            df["銘柄コード"] = df["銘柄コード"].str.strip()
+            df = pd.read_csv("jpx_master.csv", dtype=str)
+            df["コード"] = df["コード"].str.zfill(4)
+            df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
             return df
         except Exception:
             pass
-    return pd.DataFrame(columns=["銘柄コード", "銘柄名称", "商品分類", "市場区分", "業種"])
+    return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
 
 jpx_df = load_jpx_master()
-
-jpx_options = []
-jpx_options_dict = {}
-if not jpx_df.empty:
-    for _, row in jpx_df.iterrows():
-        c_raw = str(row["銘柄コード"]).strip()
-        c_4 = norm_c(c_raw)[:4]
-        n_val = str(row["銘柄名称"]).strip()
-        opt_str = f"{c_4} - {n_val}"
-        jpx_options.append(opt_str)
-        jpx_options_dict[c_4] = opt_str
-
-def get_sym(code):
-    clean_c = norm_c(code)
-    base_c = clean_c[:4]
-    return f"{base_c}.T"
-
-name_map = {}
-if not jpx_df.empty:
-    for _, row in jpx_df.iterrows():
-        c_raw = str(row["銘柄コード"]).strip()
-        c_4 = norm_c(c_raw)[:4]
-        n_val = str(row["銘柄名称"]).strip()
-        name_map[c_raw] = n_val
-        name_map[c_4] = n_val
+jpx_options = jpx_df["オプション表示"].tolist() if not jpx_df.empty else []
 
 def get_company_name(code):
-    c_clean = norm_c(code)
-    if c_clean in name_map:
-        return name_map[c_clean]
-    if c_clean[:4] in name_map:
-        return name_map[c_clean[:4]]
-    return code
+    clean_c = str(code).zfill(4)[:4]
+    if not jpx_df.empty:
+        match = jpx_df[jpx_df["コード"] == clean_c]
+        if not match.empty:
+            return match.iloc[0]["銘柄名"]
+    return f"銘柄-{clean_c}"
 
-def get_dividend_data(code, info_dict, cur_price, ticker_obj=None):
-    if not cur_price or pd.isna(cur_price) or cur_price <= 0:
-        return 0.0, 0.0, 0.0, "N/A", None
+def norm_c(c):
+    return str(c).strip().zfill(4)[:4]
 
-    div_y = 0.0
-    annual_d = 0.0
+def get_sym(code):
+    c_str = norm_c(code)
+    return f"{c_str}.T"
 
-    raw_y = info_dict.get("dividendYield")
-    if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
-        raw_val = float(raw_y)
-        div_y = raw_val * 100 if raw_val < 0.20 else raw_val
-        annual_d = (div_y / 100.0) * float(cur_price)
-    
-    if div_y == 0.0:
-        d_rate = info_dict.get("dividendRate") or info_dict.get("trailingAnnualDividendRate")
-        if d_rate and not pd.isna(d_rate) and float(d_rate) > 0:
-            annual_d = float(d_rate)
-            div_y = (annual_d / float(cur_price)) * 100
-
-    if div_y == 0.0 and ticker_obj is not None:
-        try:
-            div_hist = ticker_obj.dividends
-            if not div_hist.empty:
-                last_year_sum = float(div_hist.last("365D").sum())
-                if last_year_sum > 0:
-                    annual_d = last_year_sum
-                    div_y = (annual_d / float(cur_price)) * 100
-        except Exception:
-            pass
-
-    hist_div_actual = 0.0
-    if ticker_obj is not None:
-        try:
-            div_hist = ticker_obj.dividends
-            if not div_hist.empty:
-                yearly_divs = div_hist.resample("YE").sum().dropna()
-                current_year = datetime.now().year
-                completed = yearly_divs[yearly_divs.index.year < current_year]
-                if not completed.empty:
-                    hist_div_actual = float(completed.iloc[-1])
-        except Exception:
-            pass
-
-    warn_msg = None
-    if div_y >= 10.0:
-        warn_msg = f"🚨 利回りが{div_y:.1f}%と高水準です。念のため公式開示情報をご確認ください。"
-
-    return div_y, annual_d, hist_div_actual, "自動取得", warn_msg
-
-def load_watchlist_data():
-    tickers, tags, details = [], {}, {}
-    if os.path.exists(WATCHLIST_FILE):
-        try:
-            with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                if isinstance(d, dict):
-                    for k, v in d.items():
-                        c_norm = norm_c(k)[:4]
-                        tickers.append(c_norm)
-                        if isinstance(v, dict):
-                            val = v.get("status", "監視")
-                            if val in ["💼 保有中", "保有"]: val = "保有"
-                            elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
-                            else: val = "趣味"
-                            tags[c_norm] = val
-                            details[c_norm] = {
-                                "buy_price": float(v.get("buy_price", 0.0)),
-                                "shares": int(v.get("shares", 0)),
-                                "gain_pct": float(v.get("gain_pct", 20.0)),
-                                "annual_div": float(v.get("annual_div", 0.0))
-                            }
-                        else:
-                            val = v if v in STATUS_OPTS else "監視"
-                            if val in ["💼 保有中", "保有"]: val = "保有"
-                            elif val in ["👀 監視中", "🎯 買いたい", "監視"]: val = "監視"
-                            else: val = "趣味"
-                            tags[c_norm] = val
-                            details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
-                elif isinstance(d, list):
-                    for c in d:
-                        c_norm = norm_c(c)[:4]
-                        tickers.append(c_norm)
-                        tags[c_norm] = "監視"
-                        details[c_norm] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
-        except Exception:
-            pass
-    cln = list(dict.fromkeys(tickers))
-    for c in cln:
-        if c not in tags: tags[c] = "監視"
-        if c not in details: details[c] = {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0}
-    return cln, tags, details
-
-def save_watchlist_data(tickers, tags, details):
-    cln = list(dict.fromkeys([norm_c(c)[:4] for c in tickers]))
-    st.session_state.watchlist = cln
-    st.session_state.company_tags = tags
-    st.session_state.portfolio_details = details
+# -------------------------------------------------------------------------
+# 配当データ取得ヘルパー
+# -------------------------------------------------------------------------
+def get_dividend_data(code, info, cur_p, ticker_obj=None):
+    div_y, annual_d, hist_actual_d, source_type, warn_msg = np.nan, 0.0, 0.0, "なし", None
     try:
-        data_to_save = {}
-        for c in cln:
-            det = details.get(c, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
-            data_to_save[c] = {
-                "status": tags.get(c, "監視"),
-                "buy_price": det.get("buy_price", 0.0),
-                "shares": det.get("shares", 0),
-                "gain_pct": det.get("gain_pct", 20.0),
-                "annual_div": det.get("annual_div", 0.0)
-            }
-        with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+        raw_y = info.get("dividendYield")
+        if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
+            div_y = float(raw_y) * 100 if float(raw_y) < 1 else float(raw_y)
+            
+        raw_r = info.get("dividendRate")
+        if raw_r is not None and not pd.isna(raw_r) and float(raw_r) > 0:
+            annual_d = float(raw_r)
+
+        t = ticker_obj if ticker_obj else yf.Ticker(get_sym(code))
+        divs = t.dividends
+        if not divs.empty:
+            yearly_divs = divs.resample("YE").sum().dropna()
+            if not yearly_divs.empty:
+                hist_actual_d = float(yearly_divs.iloc[-1])
+                if annual_d == 0.0 and len(yearly_divs) >= 1:
+                    annual_d = float(yearly_divs.iloc[-1])
+                    source_type = "直近実績年間配当"
+
+        if (pd.isna(div_y) or div_y == 0) and annual_d > 0 and cur_p > 0:
+            div_y = (annual_d / cur_p) * 100
+
+        if div_y > 8.0:
+            warn_msg = f"⚠️ 【高利回り要確認】計算上の配当利回りが {div_y:.2f}% と高水準です。一時的な特別配当や株価急落、またはデータの誤りが含まれている可能性があります。"
     except Exception:
         pass
+    return div_y, annual_d, hist_actual_d, source_type, warn_msg
 
-if "watchlist" not in st.session_state:
-    w, t, d = load_watchlist_data()
-    st.session_state.watchlist = w
-    st.session_state.company_tags = t
-    st.session_state.portfolio_details = d
-
+# -------------------------------------------------------------------------
+# 銘柄総合診断ダイアログ
+# -------------------------------------------------------------------------
 @st.dialog("📊 銘柄総合診断（健全性 ✕ 買い時 ✕ 配当維持力）", width="large")
 def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
     sym = get_sym(code)
@@ -361,6 +303,7 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
 
             cats = ['売上成長', '営業利益率', '純利益成長', '純利益安定', '配当継続力', '配当性向', '自己資本比率', '利益剰余金']
             chart_scores = [h_scores.get(c, 0) for c in cats]
+            import plotly.graph_objects as go
             fig = go.Figure(go.Scatterpolar(r=chart_scores + [chart_scores[0]], theta=cats + [cats[0]], fill='toself', fillcolor='rgba(14,165,233,0.25)', line=dict(color='#0284c7', width=2)))
             fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, height=190, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
@@ -374,6 +317,9 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
 if "cached_price_df" not in st.session_state:
     st.session_state.cached_price_df = pd.DataFrame()
 
+# -------------------------------------------------------------------------
+# データ一括取得関数（1銘柄時のマルチインデックス完全対応版）
+# -------------------------------------------------------------------------
 def fetch_watchlist_data_memory(tickers_tuple):
     if not tickers_tuple: return pd.DataFrame()
     cln = list(dict.fromkeys([norm_c(t)[:4] for t in tickers_tuple]))
@@ -388,13 +334,35 @@ def fetch_watchlist_data_memory(tickers_tuple):
         sym = get_sym(c)
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
         try:
-            df = data[sym] if (not data.empty and len(cln) > 1 and sym in data) else (data if not data.empty and len(cln) == 1 else pd.DataFrame())
+            df = pd.DataFrame()
+            if not data.empty:
+                if len(cln) == 1:
+                    df = data
+                elif sym in data:
+                    df = data[sym]
+            
             t_obj = yf.Ticker(sym)
             if df.empty or len(df.dropna(how="all")) < 2:
                 single = t_obj.history(period="1mo", auto_adjust=False)
                 if not single.empty and len(single) >= 2: df = single
-            if not df.empty and "Close" in df.columns:
-                cl = df["Close"].dropna()
+            
+            if not df.empty:
+                # カラムの平坦化・探索（MultiIndex対応）
+                if isinstance(df.columns, pd.MultiIndex):
+                    close_series = None
+                    for col in df.columns:
+                        if (sym in col or c in str(col)) and ("Close" in col):
+                            close_series = df[col].dropna()
+                            break
+                    if close_series is None or close_series.empty:
+                        for col in df.columns:
+                            if "Close" in col:
+                                close_series = df[col].dropna()
+                                break
+                    cl = close_series if close_series is not None else pd.Series(dtype=float)
+                else:
+                    cl = df["Close"].dropna() if "Close" in df.columns else pd.Series(dtype=float)
+
                 if len(cl) >= 2:
                     cur_p, prev_p = float(cl.iloc[-1]), float(cl.iloc[-2])
                     diff = cur_p - prev_p
@@ -418,6 +386,9 @@ def fetch_watchlist_data_memory(tickers_tuple):
         })
     return pd.DataFrame(rows)
 
+# -------------------------------------------------------------------------
+# メイン表示部
+# -------------------------------------------------------------------------
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
 if c_r.button("🔄 最新データ更新", use_container_width=True):
@@ -708,6 +679,9 @@ if not df_all.empty:
                     }
                 )
 
+# -------------------------------------------------------------------------
+# サイドバー管理 ＆ バックアップ機能追加
+# -------------------------------------------------------------------------
 st.sidebar.header("⚙️ 銘柄管理")
 with st.sidebar.expander("➕ 銘柄の追加", expanded=False):
     add_mode = st.radio("入力方法", ["マスターから選択", "コード直接入力"], horizontal=True)
@@ -794,4 +768,47 @@ with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
     else:
         st.info("登録銘柄がありません。")
 
-
+# -------------------------------------------------------------------------
+# 設定のバックアップ・復元（エクスポート／インポート）
+# -------------------------------------------------------------------------
+with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=False):
+    st.caption("クラウド環境の再起動等によるデータ消失に備え、設定をファイルとして保存・復元できます。")
+    
+    current_data_dict = {
+        "watchlist": st.session_state.watchlist,
+        "company_tags": st.session_state.company_tags,
+        "portfolio_details": st.session_state.portfolio_details
+    }
+    json_bytes = json.dumps(current_data_dict, ensure_ascii=False, indent=2).encode("utf-8")
+    export_filename = f"stock_watchlist_backup_{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.json"
+    
+    st.download_button(
+        label="📥 設定ファイルをダウンロード",
+        data=json_bytes,
+        file_name=export_filename,
+        mime="application/json",
+        use_container_width=True
+    )
+    
+    st.divider()
+    
+    uploaded_file = st.file_uploader("📤 バックアップファイルから復元", type=["json"])
+    if uploaded_file is not None:
+        try:
+            imported_data = json.load(uploaded_file)
+            if isinstance(imported_data, dict) and "watchlist" in imported_data:
+                st.session_state.watchlist = imported_data.get("watchlist", [])
+                st.session_state.company_tags = imported_data.get("company_tags", {})
+                st.session_state.portfolio_details = imported_data.get("portfolio_details", {})
+                
+                save_watchlist_data(
+                    st.session_state.watchlist, 
+                    st.session_state.company_tags, 
+                    st.session_state.portfolio_details
+                )
+                st.success("設定データを正常に復元しました！")
+                st.rerun()
+            else:
+                st.error("エラー: 想定外のファイル構造です。正しいバックアップファイルを選択してください。")
+        except Exception as e:
+            st.error(f"インポートエラー: {e}")
