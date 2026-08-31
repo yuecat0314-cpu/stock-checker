@@ -58,7 +58,7 @@ if "watchlist" not in st.session_state:
     st.session_state.portfolio_details = details
 
 # -------------------------------------------------------------------------
-# マスター読込（文字コード自動判定 ＆ エラー可視化対応版）
+# マスター読込（列名ゆらぎ自動対応版）
 # -------------------------------------------------------------------------
 @st.cache_data
 def load_jpx_master():
@@ -70,12 +70,18 @@ def load_jpx_master():
     for enc in ["utf-8", "cp932", "shift_jis", "utf-8-sig"]:
         try:
             df = pd.read_csv("jpx_master.csv", dtype=str, encoding=enc)
-            if "コード" in df.columns and "銘柄名" in df.columns:
-                df["コード"] = df["コード"].str.zfill(4)
+            
+            # 列名のゆらぎを吸収（コード/銘柄コード、銘柄名/銘柄名称に対応）
+            code_col = next((c for c in ["コード", "銘柄コード"] if c in df.columns), None)
+            name_col = next((c for c in ["銘柄名", "銘柄名称"] if c in df.columns), None)
+            
+            if code_col and name_col:
+                df["コード"] = df[code_col].str.zfill(4)
+                df["銘柄名"] = df[name_col]
                 df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
                 return df
             else:
-                last_error = f"必須カラム（コード、銘柄名）が見つかりません (encoding={enc}, 検出列: {list(df.columns)})"
+                last_error = f"必須カラムが見つかりません (encoding={enc}, 検出列: {list(df.columns)})"
         except Exception as e:
             last_error = f"読み込み例外 (encoding={enc}): {e}"
             continue
@@ -544,12 +550,12 @@ if not df_all.empty:
 
     with tab_profit:
         st.markdown("##### ⚖️ 含み益と配当金の釣り合い管理")
-        st.caption("保有銘柄の「評価損益（含み益）」が「年間配当金の何年分に相当するか」を一覧で確認できます。")
+        st.caption("保有銘柄の評価損益が年間配当金の何年分に相当するかを確認できます。")
         
         hold_codes = df_all[df_all["状態"] == "保有"]["コード"].tolist()
         
         if not hold_codes:
-            st.info("現在、「保有」タブに登録されている銘柄はありません。まずは銘柄を追加してください。")
+            st.info("現在、「保有」タブに登録されている銘柄はありません。")
         else:
             if "portfolio_details" not in st.session_state:
                 st.session_state.portfolio_details = {}
@@ -575,7 +581,7 @@ if not df_all.empty:
                     a_div = col_p4.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
                     
                     auto_target = b_price * (1.0 + g_pct / 100.0) if b_price > 0 else 0.0
-                    st.caption(f"✨ 自動計算される利確ライン: **{auto_target:,.1f} 円** (取得単価 ＋ {g_pct:+.1f}%)")
+                    st.caption(f"✨ 自動計算される利確ライン: **{auto_target:,.1f} 円**")
 
                     if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
                         st.session_state.portfolio_details[target_hc] = {
