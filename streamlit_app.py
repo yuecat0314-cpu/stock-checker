@@ -58,7 +58,7 @@ if "watchlist" not in st.session_state:
     st.session_state.portfolio_details = details
 
 # -------------------------------------------------------------------------
-# マスター読込（列名ゆらぎ自動対応版）
+# マスター読込（列名ゆらぎ・5桁コード完全対応版）
 # -------------------------------------------------------------------------
 @st.cache_data
 def load_jpx_master():
@@ -71,13 +71,13 @@ def load_jpx_master():
         try:
             df = pd.read_csv("jpx_master.csv", dtype=str, encoding=enc)
             
-            # 列名のゆらぎを吸収（コード/銘柄コード、銘柄名/銘柄名称に対応）
             code_col = next((c for c in ["コード", "銘柄コード"] if c in df.columns), None)
             name_col = next((c for c in ["銘柄名", "銘柄名称"] if c in df.columns), None)
             
             if code_col and name_col:
-                df["コード"] = df[code_col].str.zfill(4)
-                df["銘柄名"] = df[name_col]
+                # 確実に文字列化し、前後の空白を除外し、先頭4桁を取り出してzfill(4)する
+                df["コード"] = df[code_col].astype(str).str.strip().str[:4].str.zfill(4)
+                df["銘柄名"] = df[name_col].astype(str).str.strip()
                 df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
                 return df
             else:
@@ -93,7 +93,7 @@ jpx_df = load_jpx_master()
 jpx_options = jpx_df["オプション表示"].tolist() if not jpx_df.empty else []
 
 def get_company_name(code):
-    clean_c = str(code).zfill(4)[:4]
+    clean_c = str(code).strip().zfill(4)[:4]
     if not jpx_df.empty:
         match = jpx_df[jpx_df["コード"] == clean_c]
         if not match.empty:
