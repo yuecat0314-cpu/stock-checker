@@ -76,8 +76,9 @@ def load_jpx_master():
             name_col = next((c for c in ["銘柄名", "銘柄名称"] if c in df.columns), None)
             
             if code_col and name_col:
-                df["コード"] = df[code_col].str.zfill(4)
-                df["銘柄名"] = df[name_col]
+                # 確実に文字列化し、前後の空白を除外し、先頭4桁を取り出してzfill(4)する
+                df["コード"] = df[code_col].astype(str).str.strip().str[:4].str.zfill(4)
+                df["銘柄名"] = df[name_col].astype(str).str.strip()
                 df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
                 return df
             else:
@@ -574,20 +575,16 @@ if not df_all.empty:
                 with st.container(border=True):
                     st.markdown(f"**📌 {target_name} ({target_hc})** ｜ 現在値: `{cur_p:,.1f} 円`")
                     
-                    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                    col_p1, col_p2, col_p3 = st.columns(3)
                     b_price = col_p1.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
                     n_shares = col_p2.number_input("保持株数", min_value=0, value=int(saved_info.get("shares", 0)), step=100, key=f"sh_{target_hc}")
-                    g_pct = col_p3.number_input("目標上昇率 (%)", min_value=-50.0, value=float(saved_info.get("gain_pct", 20.0)), step=1.0, format="%.1f", key=f"gp_{target_hc}")
-                    a_div = col_p4.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
+                    a_div = col_p3.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
                     
-                    auto_target = b_price * (1.0 + g_pct / 100.0) if b_price > 0 else 0.0
-                    st.caption(f"✨ 自動計算される利確ライン: **{auto_target:,.1f} 円**")
-
                     if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
                         st.session_state.portfolio_details[target_hc] = {
                             "buy_price": b_price,
                             "shares": n_shares,
-                            "gain_pct": g_pct,
+                            "gain_pct": float(saved_info.get("gain_pct", 20.0)),
                             "annual_div": a_div
                         }
                         save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
@@ -607,10 +604,7 @@ if not df_all.empty:
                 det = st.session_state.portfolio_details.get(hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
                 bp = det.get("buy_price", 0.0)
                 sh = det.get("shares", 0)
-                gp = det.get("gain_pct", 20.0)
                 ad = det.get("annual_div", 0.0)
-
-                tp = bp * (1.0 + gp / 100.0) if bp > 0 else 0.0
 
                 p_loss_yen = (cur_p - bp) * sh if bp > 0 and sh > 0 else np.nan
                 p_loss_pct = ((cur_p - bp) / bp) * 100 if bp > 0 else np.nan
@@ -619,16 +613,14 @@ if not df_all.empty:
                 
                 div_multiple = p_loss_yen / annual_div_total if p_loss_yen is not np.nan and annual_div_total is not np.nan and annual_div_total > 0 else np.nan
 
-                status_icon = "🟢 通常"
-                is_target_reached = (tp > 0 and cur_p >= tp)
-                is_near_target = (tp > 0 and cur_p >= tp * 0.95)
                 is_overheated = (week_p >= 6.0 or ma_dev >= 7.0)
+                is_rising = (week_p >= 4.0 or ma_dev >= 4.0)
                 is_downturn = (week_p <= -5.0 or ma_dev <= -5.0)
 
-                if is_target_reached or is_overheated:
+                if is_overheated:
                     status_icon = "🔴 要確認"
-                elif is_near_target or week_p >= 4.0 or ma_dev >= 4.0:
-                    status_icon = "🟡 上昇・利確接近警戒"
+                elif is_rising:
+                    status_icon = "🟡 上昇警戒"
                 elif is_downturn:
                     status_icon = "🔵 下落・原因確認"
                 else:
