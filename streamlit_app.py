@@ -60,33 +60,27 @@ if "watchlist" not in st.session_state:
 # -------------------------------------------------------------------------
 @st.cache_data
 def load_jpx_master():
-    if os.path.exists("jpx_master.csv"):
+    if not os.path.exists("jpx_master.csv"):
+        st.warning("⚠️ 【マスター読込エラー】`jpx_master.csv` ファイルが見つかりません。")
+        return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
+    
+    last_error = None
+    for enc in ["utf-8", "cp932", "shift_jis", "utf-8-sig"]:
         try:
-            df = pd.read_csv("jpx_master.csv", dtype=str)
-            df["コード"] = df["コード"].str.zfill(4)
-            df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
-            return df
-        except Exception:
-            pass
+            df = pd.read_csv("jpx_master.csv", dtype=str, encoding=enc)
+            if "コード" in df.columns and "銘柄名" in df.columns:
+                df["コード"] = df["コード"].str.zfill(4)
+                df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
+                return df
+            else:
+                last_error = f"必須カラム（コード、銘柄名）が見つかりません (encoding={enc}, 検出列: {list(df.columns)})"
+        except Exception as e:
+            last_error = f"読み込み例外 (encoding={enc}): {e}"
+            continue
+            
+    st.error(f"❌ `jpx_master.csv` の読込に失敗しました。\n詳細な原因: {last_error}")
     return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
 
-jpx_df = load_jpx_master()
-jpx_options = jpx_df["オプション表示"].tolist() if not jpx_df.empty else []
-
-def get_company_name(code):
-    clean_c = str(code).zfill(4)[:4]
-    if not jpx_df.empty:
-        match = jpx_df[jpx_df["コード"] == clean_c]
-        if not match.empty:
-            return match.iloc[0]["銘柄名"]
-    return f"銘柄-{clean_c}"
-
-def norm_c(c):
-    return str(c).strip().zfill(4)[:4]
-
-def get_sym(code):
-    c_str = norm_c(code)
-    return f"{c_str}.T"
 
 # -------------------------------------------------------------------------
 # 配当データ取得ヘルパー
