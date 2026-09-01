@@ -606,7 +606,7 @@ if not df_all.empty:
                     
                     col_p1, col_p2, col_p3 = st.columns(3)
                     b_price = col_p1.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
-                    n_shares = col_p2.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.2f", key=f"sh_{target_hc}")
+                    n_shares = col_p2.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.5f", key=f"sh_{target_hc}")
                     a_div = col_p3.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
                     
                     if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
