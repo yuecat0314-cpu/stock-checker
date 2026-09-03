@@ -144,7 +144,11 @@ def get_dividend_data(code, info, cur_p, ticker_obj=None):
     try:
         raw_y = info.get("dividendYield")
         if raw_y is not None and not pd.isna(raw_y) and float(raw_y) > 0:
-            div_y = float(raw_y) * 100 if float(raw_y) < 1 else float(raw_y)
+            # yfinanceのdividendYieldは既にパーセント表記（例: 3.68 = 3.68%）で
+            # 返ってくる仕様のため、そのまま使う。
+            # （旧: 1未満なら100倍、という判定は1%未満の低利回り銘柄を
+            # 　誤って100倍に膨らませてしまうため廃止）
+            div_y = float(raw_y)
             
         raw_r = info.get("dividendRate")
         if raw_r is not None and not pd.isna(raw_r) and float(raw_r) > 0:
@@ -591,35 +595,7 @@ if not df_all.empty:
             if "portfolio_details" not in st.session_state:
                 st.session_state.portfolio_details = {}
 
-            edit_options = [f"{hc} - {get_company_name(hc)}" for hc in hold_codes]
-            selected_edit_item = st.selectbox("個別設定・調整する銘柄を選択", edit_options, key="select_profit_edit")
-            
-            if selected_edit_item:
-                target_hc = norm_c(selected_edit_item.split(" - ")[0])[:4]
-                target_name = get_company_name(target_hc)
-                p_match = df_all[df_all["コード"] == target_hc]
-                cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
-
-                saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
-                
-                with st.container(border=True):
-                    st.markdown(f"**📌 {target_name} ({target_hc})** ｜ 現在値: `{cur_p:,.1f} 円`")
-                    
-                    col_p1, col_p2, col_p3 = st.columns(3)
-                    b_price = col_p1.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
-                    n_shares = col_p2.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.5f", key=f"sh_{target_hc}")
-                    a_div = col_p3.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
-                    
-                    if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}"):
-                        st.session_state.portfolio_details[target_hc] = {
-                            "buy_price": b_price,
-                            "shares": n_shares,
-                            "gain_pct": float(saved_info.get("gain_pct", 20.0)),
-                            "annual_div": a_div
-                        }
-                        save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
-                        st.success(f"{target_name} の設定を保存しました！")
-                        st.rerun()
+            st.caption("💡 取得単価・保持株数・年間配当金の編集は、左サイドバーの「⚖️ 保有銘柄の詳細設定」から行えます。")
 
             st.divider()
 
@@ -805,6 +781,42 @@ with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
                 show_detail_dialog(diag_target, diag_name, diag_status)
     else:
         st.info("登録銘柄がありません。")
+
+with st.sidebar.expander("⚖️ 保有銘柄の詳細設定", expanded=False):
+    hold_codes_sb = df_all[df_all["状態"] == "保有"]["コード"].tolist() if not df_all.empty else []
+    if not hold_codes_sb:
+        st.info("「保有」タブに登録されている銘柄がありません。")
+    else:
+        if "portfolio_details" not in st.session_state:
+            st.session_state.portfolio_details = {}
+
+        edit_options_sb = [f"{hc} - {get_company_name(hc)}" for hc in hold_codes_sb]
+        selected_edit_item_sb = st.selectbox("編集する銘柄", edit_options_sb, key="select_profit_edit_sb")
+
+        if selected_edit_item_sb:
+            target_hc = norm_c(selected_edit_item_sb.split(" - ")[0])[:4]
+            target_name = get_company_name(target_hc)
+            p_match = df_all[df_all["コード"] == target_hc]
+            cur_p = p_match.iloc[0]["現在値"] if not p_match.empty and not pd.isna(p_match.iloc[0]["現在値"]) else 0.0
+
+            saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
+
+            st.caption(f"📌 {target_name} ({target_hc}) ｜ 現在値: {cur_p:,.1f} 円")
+
+            b_price = st.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
+            n_shares = st.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.5f", key=f"sh_{target_hc}")
+            a_div = st.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
+
+            if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}", use_container_width=True):
+                st.session_state.portfolio_details[target_hc] = {
+                    "buy_price": b_price,
+                    "shares": n_shares,
+                    "gain_pct": float(saved_info.get("gain_pct", 20.0)),
+                    "annual_div": a_div
+                }
+                save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+                st.success(f"{target_name} の設定を保存しました！")
+                st.rerun()
 
 with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=False):
     st.caption("クラウド環境の再起動等によるデータ消失に備え、設定をファイルとして保存・復元できます。")
