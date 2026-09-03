@@ -479,36 +479,37 @@ if not df_all.empty:
     
     with st.container(border=True):
         st.markdown("##### 🚨 本日の注目シグナル ＆ 参考高利回り")
-        has_signal = False
-        
-        dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
-        for _, r in dip_df.head(3).iterrows():
-            has_signal = True
-            yld_val = r['利回り']
-            yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
-            st.markdown(f"- 🟢 **【押し目候補】** {r['銘柄名']} ({r['コード']}): 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`")
-        
-        heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
-        heat_items = []
-        for _, r in heat_df.head(3).iterrows():
-            heat_items.append(f"**{r['銘柄名']} ({r['コード']})**: 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
-        if heat_items:
-            has_signal = True
-            st.markdown(f"- 🔴 **【過熱中】** " + " ｜ ".join(heat_items))
-        
-        high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
-        hy_items = []
-        for _, r in high_yield_df.head(3).iterrows():
-            yld_val = r['利回り']
-            yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
-            hy_items.append(f"**{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
-        if hy_items:
-            has_signal = True
-            st.markdown(f"- 💰 **【高利回り】** " + " ｜ ".join(hy_items))
 
-        if not has_signal:
-            st.success("✅ 現在、該当するシグナルはありません。")
-        
+        sig_tab_dip, sig_tab_heat, sig_tab_yield = st.tabs(["🟢 押し目", "🔴 過熱", "💰 高利回り"])
+
+        with sig_tab_dip:
+            dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
+            if dip_df.empty:
+                st.success("✅ 該当する銘柄はありません。")
+            else:
+                for _, r in dip_df.head(6).iterrows():
+                    yld_val = r['利回り']
+                    yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
+                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`")
+
+        with sig_tab_heat:
+            heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
+            if heat_df.empty:
+                st.success("✅ 該当する銘柄はありません。")
+            else:
+                for _, r in heat_df.head(6).iterrows():
+                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
+
+        with sig_tab_yield:
+            high_yield_df = valid_df[valid_df["利回り"] >= 5.0].sort_values(by="利回り", ascending=False)
+            if high_yield_df.empty:
+                st.success("✅ 該当する銘柄はありません。")
+            else:
+                for _, r in high_yield_df.head(6).iterrows():
+                    yld_val = r['利回り']
+                    yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
+                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
+
     st.divider()
 
     tab_all, tab_watch, tab_hold, tab_hobby, tab_profit = st.tabs(["すべて", "監視", "保有", "趣味", "🎯 釣り合い管理"])
