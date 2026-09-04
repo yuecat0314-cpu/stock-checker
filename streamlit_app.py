@@ -388,6 +388,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
         sym = get_sym(c)
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
         is_above_ma75 = None
+        is_rebounding = None
         try:
             df = pd.DataFrame()
             if not data.empty:
@@ -427,6 +428,12 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     # 75日移動平均（表には出さず、シグナル判定の裏側だけで使う）
                     ma75 = float(cl.rolling(75).mean().iloc[-1]) if len(cl) >= 75 else float(cl.mean())
                     is_above_ma75 = bool(cur_p >= ma75)
+                    # 5日移動平均の向き（反発初動 or 下落継続中の判定用）
+                    is_rebounding = None
+                    if len(cl) >= 6:
+                        ma5_series = cl.rolling(5).mean().dropna()
+                        if len(ma5_series) >= 2:
+                            is_rebounding = bool(ma5_series.iloc[-1] > ma5_series.iloc[-2])
 
             info_cached = get_ticker_info_cached(sym)
             div_y, _, _, _, _ = get_dividend_data(c, info_cached, cur_p)
@@ -440,7 +447,8 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "1週": week_pct, 
             "25日乖離": ma25_dev, 
             "利回り": div_y,
-            "中期トレンド上": is_above_ma75
+            "中期トレンド上": is_above_ma75,
+            "短期反発中": is_rebounding
         })
     return pd.DataFrame(rows)
 
@@ -475,10 +483,11 @@ for c in st.session_state.watchlist:
             "1週": p_row.iloc[0]["1週"],
             "25日乖離": p_row.iloc[0]["25日乖離"],
             "利回り": p_row.iloc[0]["利回り"],
-            "中期トレンド上": p_row.iloc[0]["中期トレンド上"] if "中期トレンド上" in p_row.columns else None
+            "中期トレンド上": p_row.iloc[0]["中期トレンド上"] if "中期トレンド上" in p_row.columns else None,
+            "短期反発中": p_row.iloc[0]["短期反発中"] if "短期反発中" in p_row.columns else None
         })
     else:
-        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None})
+        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None, "短期反発中": None})
     rows.append(row_data)
 
 df_all = pd.DataFrame(rows)
@@ -499,17 +508,24 @@ if not df_all.empty:
             if dip_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
-                for _, r in dip_df.head(6).iterrows():
+                for _, r in dip_df.head(10).iterrows():
                     yld_val = r['利回り']
                     yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
-                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`")
+                    if r['短期反発中'] is True:
+                        trend_tag = "🔄 反発初動"
+                    elif r['短期反発中'] is False:
+                        trend_tag = "⬇️ 下落継続中"
+                    else:
+                        trend_tag = ""
+                    tag_str = f", {trend_tag}" if trend_tag else ""
+                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`{tag_str}")
 
         with sig_tab_heat:
             heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
             if heat_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
-                for _, r in heat_df.head(6).iterrows():
+                for _, r in heat_df.head(10).iterrows():
                     st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 1W `{r['1週']:+.1f}%`, 25d `{r['25日乖離']:+.1f}%`")
 
         with sig_tab_yield:
@@ -517,7 +533,7 @@ if not df_all.empty:
             if high_yield_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
-                for _, r in high_yield_df.head(6).iterrows():
+                for _, r in high_yield_df.head(10).iterrows():
                     yld_val = r['利回り']
                     yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
                     st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
