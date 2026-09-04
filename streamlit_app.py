@@ -377,7 +377,9 @@ def fetch_watchlist_data_memory(tickers_tuple):
     cln = list(dict.fromkeys([norm_c(t)[:4] for t in tickers_tuple]))
     syms = [get_sym(t) for t in cln]
     try:
-        data = yf.download(syms, period="3mo", interval="1d", group_by="ticker", auto_adjust=False, progress=False)
+        # 75日移動平均の算出には最低75営業日分のデータが必要なため、
+        # 3moから6moに拡張（余裕を持たせて安定して75日線を取れるようにする）
+        data = yf.download(syms, period="6mo", interval="1d", group_by="ticker", auto_adjust=False, progress=False)
     except Exception:
         data = pd.DataFrame()
     
@@ -385,6 +387,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
     for c in cln:
         sym = get_sym(c)
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
+        is_above_ma75 = None
         try:
             df = pd.DataFrame()
             if not data.empty:
@@ -394,7 +397,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     df = data[sym]
             
             if df.empty or len(df.dropna(how="all")) < 2:
-                single = get_ticker_history_cached(sym, period="1mo")
+                single = get_ticker_history_cached(sym, period="6mo")
                 if not single.empty and len(single) >= 2: df = single
             
             if not df.empty:
@@ -421,6 +424,9 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     week_pct = ((cur_p - w_p) / w_p) * 100
                     ma25 = float(cl.rolling(25).mean().iloc[-1]) if len(cl) >= 25 else float(cl.mean())
                     ma25_dev = ((cur_p - ma25) / ma25) * 100
+                    # 75日移動平均（表には出さず、シグナル判定の裏側だけで使う）
+                    ma75 = float(cl.rolling(75).mean().iloc[-1]) if len(cl) >= 75 else float(cl.mean())
+                    is_above_ma75 = bool(cur_p >= ma75)
 
             info_cached = get_ticker_info_cached(sym)
             div_y, _, _, _, _ = get_dividend_data(c, info_cached, cur_p)
@@ -433,7 +439,8 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "前日比": diff_pct, 
             "1週": week_pct, 
             "25日乖離": ma25_dev, 
-            "利回り": div_y
+            "利回り": div_y,
+            "中期トレンド上": is_above_ma75
         })
     return pd.DataFrame(rows)
 
@@ -467,10 +474,11 @@ for c in st.session_state.watchlist:
             "前日比": p_row.iloc[0]["前日比"],
             "1週": p_row.iloc[0]["1週"],
             "25日乖離": p_row.iloc[0]["25日乖離"],
-            "利回り": p_row.iloc[0]["利回り"]
+            "利回り": p_row.iloc[0]["利回り"],
+            "中期トレンド上": p_row.iloc[0]["中期トレンド上"] if "中期トレンド上" in p_row.columns else None
         })
     else:
-        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan})
+        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None})
     rows.append(row_data)
 
 df_all = pd.DataFrame(rows)
@@ -487,7 +495,7 @@ if not df_all.empty:
         sig_tab_dip, sig_tab_heat, sig_tab_yield = st.tabs(["🟢 押し目", "🔴 過熱", "💰 高利回り"])
 
         with sig_tab_dip:
-            dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0)].sort_values(by="25日乖離", ascending=True)
+            dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0) & (valid_df["中期トレンド上"] == True)].sort_values(by="25日乖離", ascending=True)
             if dip_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
