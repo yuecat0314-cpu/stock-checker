@@ -457,6 +457,15 @@ def fetch_watchlist_data_memory(tickers_tuple):
 # -------------------------------------------------------------------------
 c_t, c_r = st.columns([3, 1])
 c_t.title("📈 高配当株 監視ダッシュボード")
+
+# 復元処理の結果は、消えずに残る形でここ（画面最上部）に表示する
+if st.session_state.get("restore_result_msg"):
+    kind, msg = st.session_state.pop("restore_result_msg")
+    if kind == "success":
+        st.success(msg)
+    else:
+        st.error(msg)
+
 if c_r.button("🔄 最新データ更新", use_container_width=True):
     with st.spinner("株価データ更新中..."):
         st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
@@ -867,12 +876,17 @@ with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=F
     if uploaded_file is not None:
         # file_uploaderはユーザーが削除するまでファイルを保持し続けるため、
         # 同じファイルを何度も処理してst.rerun()が無限ループしないようガードする
-        file_signature = f"{uploaded_file.name}_{uploaded_file.size}"
+        try:
+            file_signature = f"{uploaded_file.name}_{uploaded_file.size}"
+        except Exception:
+            file_signature = uploaded_file.name
+
         if st.session_state.get("last_restored_file") != file_signature:
             try:
                 imported_data = json.load(uploaded_file)
                 if isinstance(imported_data, dict) and "watchlist" in imported_data:
-                    st.session_state.watchlist = imported_data.get("watchlist", [])
+                    new_watchlist = imported_data.get("watchlist", [])
+                    st.session_state.watchlist = new_watchlist
                     st.session_state.company_tags = imported_data.get("company_tags", {})
                     st.session_state.portfolio_details = imported_data.get("portfolio_details", {})
                     st.session_state.last_restored_file = file_signature
@@ -883,9 +897,19 @@ with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=F
                         st.session_state.portfolio_details
                     )
                     st.session_state.cached_price_df = pd.DataFrame()
-                    st.success("設定データを正常に復元しました！")
+                    st.session_state.restore_result_msg = (
+                        "success",
+                        f"✅ 設定データを復元しました！(監視銘柄 {len(new_watchlist)} 件)"
+                    )
                     st.rerun()
                 else:
-                    st.error("エラー: 想定外のファイル構造です。正しいバックアップファイルを選択してください。")
+                    st.session_state.restore_result_msg = (
+                        "error",
+                        f"❌ 復元エラー: ファイル構造が想定外です（キー: {list(imported_data.keys()) if isinstance(imported_data, dict) else type(imported_data)}）"
+                    )
+                    st.session_state.last_restored_file = file_signature
+                    st.rerun()
             except Exception as e:
-                st.error(f"インポートエラー: {e}")
+                st.session_state.restore_result_msg = ("error", f"❌ インポートエラー: {e}")
+                st.session_state.last_restored_file = file_signature
+                st.rerun()
