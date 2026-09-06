@@ -24,6 +24,22 @@ st.set_page_config(
 GSHEET_WORKSHEET = "watchlist"
 STATUS_OPTS = ["監視", "保有", "趣味"]
 
+def _format_gsheets_error(e):
+    # 一部の例外(gspreadのAPIErrorなど)は str(e) が "<Response [200]>" のように
+    # 中身の分からない表示になることがあるため、可能な限り詳細情報を拾って表示する
+    detail_parts = [f"種類: {type(e).__name__}"]
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        detail_parts.append(f"status: {getattr(resp, 'status_code', '?')}")
+        try:
+            detail_parts.append(f"body: {resp.text[:500]}")
+        except Exception:
+            pass
+    args_str = " / ".join(str(a) for a in getattr(e, "args", []) if str(a))
+    if args_str:
+        detail_parts.append(f"args: {args_str}")
+    return " ｜ ".join(detail_parts)
+
 def get_gsheets_conn():
     return st.connection("gsheets", type=GSheetsConnection)
 
@@ -50,7 +66,7 @@ def load_watchlist_data():
             }
         return watchlist, company_tags, portfolio_details
     except Exception as e:
-        st.sidebar.error(f"⚠️ Google Sheets読込エラー: {e}")
+        st.sidebar.error("⚠️ Google Sheets読込エラー: " + _format_gsheets_error(e))
         return ["1414", "5253"], {"1414": "監視", "5253": "監視"}, {}
 
 def save_watchlist_data(watchlist, company_tags, portfolio_details):
@@ -70,7 +86,7 @@ def save_watchlist_data(watchlist, company_tags, portfolio_details):
         df = pd.DataFrame(rows, columns=["code", "tag", "buy_price", "shares", "gain_pct", "annual_div"])
         conn.update(worksheet=GSHEET_WORKSHEET, data=df)
     except Exception as e:
-        st.error(f"⚠️ Google Sheets保存エラー: {e}")
+        st.error("⚠️ Google Sheets保存エラー: " + _format_gsheets_error(e))
 
 if "watchlist" not in st.session_state:
     wl, tags, details = load_watchlist_data()
