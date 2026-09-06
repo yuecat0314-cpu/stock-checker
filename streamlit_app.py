@@ -8,6 +8,7 @@ import json
 import os
 import re
 import plotly.graph_objects as go
+from streamlit_gsheets import GSheetsConnection
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -20,36 +21,56 @@ st.set_page_config(
 # -------------------------------------------------------------------------
 # データ永続化・管理関数
 # -------------------------------------------------------------------------
-DATA_FILE = "watchlist.json"
+GSHEET_WORKSHEET = "watchlist"
 STATUS_OPTS = ["監視", "保有", "趣味"]
 
+def get_gsheets_conn():
+    return st.connection("gsheets", type=GSheetsConnection)
+
 def load_watchlist_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data, {c: "監視" for c in data}, {}
-                elif isinstance(data, dict):
-                    wl = data.get("watchlist", [])
-                    tags = data.get("company_tags", {c: "監視" for c in wl})
-                    details = data.get("portfolio_details", {})
-                    return wl, tags, details
-        except Exception:
-            pass
-    return ["1414", "5253"], {"1414": "監視", "5253": "監視"}, {}
+    try:
+        conn = get_gsheets_conn()
+        df = conn.read(worksheet=GSHEET_WORKSHEET, ttl=0)
+        df = df.dropna(how="all")
+        if df.empty or "code" not in df.columns:
+            return ["1414", "5253"], {"1414": "監視", "5253": "監視"}, {}
+
+        df["code"] = df["code"].astype(str).str.strip()
+        df = df[df["code"] != ""]
+        watchlist = df["code"].tolist()
+        company_tags = dict(zip(df["code"], df["tag"].fillna("監視"))) if "tag" in df.columns else {c: "監視" for c in watchlist}
+
+        portfolio_details = {}
+        for _, row in df.iterrows():
+            portfolio_details[row["code"]] = {
+                "buy_price": float(row["buy_price"]) if pd.notna(row.get("buy_price")) else 0.0,
+                "shares": float(row["shares"]) if pd.notna(row.get("shares")) else 0.0,
+                "gain_pct": float(row["gain_pct"]) if pd.notna(row.get("gain_pct")) else 20.0,
+                "annual_div": float(row["annual_div"]) if pd.notna(row.get("annual_div")) else 0.0,
+            }
+        return watchlist, company_tags, portfolio_details
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Google Sheets読込エラー: {e}")
+        return ["1414", "5253"], {"1414": "監視", "5253": "監視"}, {}
 
 def save_watchlist_data(watchlist, company_tags, portfolio_details):
-    data = {
-        "watchlist": watchlist,
-        "company_tags": company_tags,
-        "portfolio_details": portfolio_details
-    }
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        conn = get_gsheets_conn()
+        rows = []
+        for c in watchlist:
+            d = portfolio_details.get(c, {})
+            rows.append({
+                "code": c,
+                "tag": company_tags.get(c, "監視"),
+                "buy_price": float(d.get("buy_price", 0.0)),
+                "shares": float(d.get("shares", 0.0)),
+                "gain_pct": float(d.get("gain_pct", 20.0)),
+                "annual_div": float(d.get("annual_div", 0.0)),
+            })
+        df = pd.DataFrame(rows, columns=["code", "tag", "buy_price", "shares", "gain_pct", "annual_div"])
+        conn.update(worksheet=GSHEET_WORKSHEET, data=df)
     except Exception as e:
-        st.error(f"データ保存エラー: {e}")
+        st.error(f"⚠️ Google Sheets保存エラー: {e}")
 
 if "watchlist" not in st.session_state:
     wl, tags, details = load_watchlist_data()
