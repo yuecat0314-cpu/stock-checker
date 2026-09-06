@@ -865,21 +865,27 @@ with st.sidebar.expander("💾 設定のバックアップ・復元", expanded=F
     
     uploaded_file = st.file_uploader("📤 バックアップファイルから復元", type=["json"])
     if uploaded_file is not None:
-        try:
-            imported_data = json.load(uploaded_file)
-            if isinstance(imported_data, dict) and "watchlist" in imported_data:
-                st.session_state.watchlist = imported_data.get("watchlist", [])
-                st.session_state.company_tags = imported_data.get("company_tags", {})
-                st.session_state.portfolio_details = imported_data.get("portfolio_details", {})
-                
-                save_watchlist_data(
-                    st.session_state.watchlist, 
-                    st.session_state.company_tags, 
-                    st.session_state.portfolio_details
-                )
-                st.success("設定データを正常に復元しました！")
-                st.rerun()
-            else:
-                st.error("エラー: 想定外のファイル構造です。正しいバックアップファイルを選択してください。")
-        except Exception as e:
-            st.error(f"インポートエラー: {e}")
+        # file_uploaderはユーザーが削除するまでファイルを保持し続けるため、
+        # 同じファイルを何度も処理してst.rerun()が無限ループしないようガードする
+        file_signature = f"{uploaded_file.name}_{uploaded_file.size}"
+        if st.session_state.get("last_restored_file") != file_signature:
+            try:
+                imported_data = json.load(uploaded_file)
+                if isinstance(imported_data, dict) and "watchlist" in imported_data:
+                    st.session_state.watchlist = imported_data.get("watchlist", [])
+                    st.session_state.company_tags = imported_data.get("company_tags", {})
+                    st.session_state.portfolio_details = imported_data.get("portfolio_details", {})
+                    st.session_state.last_restored_file = file_signature
+
+                    save_watchlist_data(
+                        st.session_state.watchlist, 
+                        st.session_state.company_tags, 
+                        st.session_state.portfolio_details
+                    )
+                    st.session_state.cached_price_df = pd.DataFrame()
+                    st.success("設定データを正常に復元しました！")
+                    st.rerun()
+                else:
+                    st.error("エラー: 想定外のファイル構造です。正しいバックアップファイルを選択してください。")
+            except Exception as e:
+                st.error(f"インポートエラー: {e}")
