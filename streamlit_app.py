@@ -426,6 +426,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
         is_above_ma75 = None
         is_rebounding = None
+        ma5_val, ma5_dev, ma5_direction = np.nan, np.nan, None
         try:
             df = pd.DataFrame()
             if not data.empty:
@@ -465,12 +466,23 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     # 75日移動平均（表には出さず、シグナル判定の裏側だけで使う）
                     ma75 = float(cl.rolling(75).mean().iloc[-1]) if len(cl) >= 75 else float(cl.mean())
                     is_above_ma75 = bool(cur_p >= ma75)
-                    # 5日移動平均の向き（反発初動 or 下落継続中の判定用）
+                    # 5日移動平均の向き（反発初動 or 下落継続中の判定用・既存仕様）
                     is_rebounding = None
                     if len(cl) >= 6:
                         ma5_series = cl.rolling(5).mean().dropna()
                         if len(ma5_series) >= 2:
                             is_rebounding = bool(ma5_series.iloc[-1] > ma5_series.iloc[-2])
+                            # 短期トレンドタブ用：5日MA実数値・乖離率・方向（上/下/横ばい）
+                            ma5_val = float(ma5_series.iloc[-1])
+                            ma5_prev_val = float(ma5_series.iloc[-2])
+                            if ma5_val > ma5_prev_val:
+                                ma5_direction = "上向き"
+                            elif ma5_val < ma5_prev_val:
+                                ma5_direction = "下向き"
+                            else:
+                                ma5_direction = "横ばい"
+                            if ma5_val != 0:
+                                ma5_dev = (cur_p / ma5_val * 100) - 100
 
             info_cached = get_ticker_info_cached(sym)
             div_y, _, _, _, _ = get_dividend_data(c, info_cached, cur_p)
@@ -485,7 +497,10 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "25日乖離": ma25_dev, 
             "利回り": div_y,
             "中期トレンド上": is_above_ma75,
-            "短期反発中": is_rebounding
+            "短期反発中": is_rebounding,
+            "5日MA": ma5_val,
+            "5日乖離率": ma5_dev,
+            "5日MA方向": ma5_direction
         })
     return pd.DataFrame(rows)
 
@@ -530,10 +545,13 @@ for c in st.session_state.watchlist:
             "25日乖離": p_row.iloc[0]["25日乖離"],
             "利回り": p_row.iloc[0]["利回り"],
             "中期トレンド上": p_row.iloc[0]["中期トレンド上"] if "中期トレンド上" in p_row.columns else None,
-            "短期反発中": p_row.iloc[0]["短期反発中"] if "短期反発中" in p_row.columns else None
+            "短期反発中": p_row.iloc[0]["短期反発中"] if "短期反発中" in p_row.columns else None,
+            "5日MA": p_row.iloc[0]["5日MA"] if "5日MA" in p_row.columns else np.nan,
+            "5日乖離率": p_row.iloc[0]["5日乖離率"] if "5日乖離率" in p_row.columns else np.nan,
+            "5日MA方向": p_row.iloc[0]["5日MA方向"] if "5日MA方向" in p_row.columns else None
         })
     else:
-        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None, "短期反発中": None})
+        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None, "短期反発中": None, "5日MA": np.nan, "5日乖離率": np.nan, "5日MA方向": None})
     rows.append(row_data)
 
 df_all = pd.DataFrame(rows)
@@ -547,7 +565,7 @@ if not df_all.empty:
     with st.container(border=True):
         st.markdown("##### 🚨 本日の注目シグナル ＆ 参考高利回り")
 
-        sig_tab_dip, sig_tab_heat, sig_tab_yield = st.tabs(["🟢 押し目", "🔴 過熱", "💰 高利回り"])
+        sig_tab_dip, sig_tab_heat, sig_tab_yield, sig_tab_short = st.tabs(["🟢 押し目", "🔴 過熱", "💰 高利回り", "📉 短期トレンド"])
 
         with sig_tab_dip:
             dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0) & (valid_df["中期トレンド上"] == True)].sort_values(by="25日乖離", ascending=True)
@@ -583,6 +601,28 @@ if not df_all.empty:
                     yld_val = r['利回り']
                     yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
                     st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: `{yld_str}`")
+
+        with sig_tab_short:
+            # 観測用タブ：買い候補の新規判定は行わない。25日乖離・75日線・押し目条件は一切使わない。
+            short_df = valid_df.dropna(subset=["5日乖離率"]).sort_values(by="5日乖離率", ascending=True)
+            if short_df.empty:
+                st.info("データがありません。")
+            else:
+                for _, r in short_df.head(10).iterrows():
+                    direction = r["5日MA方向"]
+                    dev = r["5日乖離率"]
+                    if direction == "上向き":
+                        label, arrow = "🟢 短期上昇", "↑"
+                    elif direction == "下向き":
+                        label, arrow = "🔴 短期下降", "↓"
+                    else:
+                        label, arrow = "🟡 短期横ばい", "→"
+                    ma5_str = f"{r['5日MA']:,.1f}円" if pd.notna(r['5日MA']) else "-"
+                    cur_str = f"{r['現在値']:,.1f}円" if pd.notna(r['現在値']) else "-"
+                    st.markdown(
+                        f"- **{label}** {r['銘柄名']} ({r['コード']}): 5日線 {arrow}, 5日乖離 `{dev:+.1f}%`, "
+                        f"現在値 `{cur_str}`, 前日比 `{r['前日比']:+.2f}%`, 5日MA `{ma5_str}`"
+                    )
 
     st.divider()
 
