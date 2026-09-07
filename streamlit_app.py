@@ -426,6 +426,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
         cur_p, diff, diff_pct, week_pct, ma25_dev, div_y = np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
         is_above_ma75 = None
         is_rebounding = None
+        is_bullish_candle = None
         ma5_val, ma5_dev, ma5_direction = np.nan, np.nan, None
         try:
             df = pd.DataFrame()
@@ -442,18 +443,27 @@ def fetch_watchlist_data_memory(tickers_tuple):
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
                     close_series = None
+                    open_series = None
                     for col in df.columns:
                         if (sym in col or c in str(col)) and ("Close" in col):
                             close_series = df[col].dropna()
-                            break
+                        if (sym in col or c in str(col)) and ("Open" in col):
+                            open_series = df[col].dropna()
                     if close_series is None or close_series.empty:
                         for col in df.columns:
                             if "Close" in col:
                                 close_series = df[col].dropna()
                                 break
+                    if open_series is None or open_series.empty:
+                        for col in df.columns:
+                            if "Open" in col:
+                                open_series = df[col].dropna()
+                                break
                     cl = close_series if close_series is not None else pd.Series(dtype=float)
+                    op = open_series if open_series is not None else pd.Series(dtype=float)
                 else:
                     cl = df["Close"].dropna() if "Close" in df.columns else pd.Series(dtype=float)
+                    op = df["Open"].dropna() if "Open" in df.columns else pd.Series(dtype=float)
 
                 if len(cl) >= 2:
                     cur_p, prev_p = float(cl.iloc[-1]), float(cl.iloc[-2])
@@ -466,7 +476,10 @@ def fetch_watchlist_data_memory(tickers_tuple):
                     # 75日移動平均（表には出さず、シグナル判定の裏側だけで使う）
                     ma75 = float(cl.rolling(75).mean().iloc[-1]) if len(cl) >= 75 else float(cl.mean())
                     is_above_ma75 = bool(cur_p >= ma75)
-                    # 5日移動平均の向き（反発初動 or 下落継続中の判定用・既存仕様）
+                    # 当日が陽線（現在値 >= 始値）かどうか（反発初動の判定用）
+                    if len(op) >= 1 and not pd.isna(op.iloc[-1]):
+                        is_bullish_candle = bool(cur_p >= float(op.iloc[-1]))
+                    # 5日移動平均の向き（既存仕様。押し目の判定条件には使わず、補助情報として表示）
                     is_rebounding = None
                     if len(cl) >= 6:
                         ma5_series = cl.rolling(5).mean().dropna()
@@ -498,6 +511,7 @@ def fetch_watchlist_data_memory(tickers_tuple):
             "利回り": div_y,
             "中期トレンド上": is_above_ma75,
             "短期反発中": is_rebounding,
+            "陽線": is_bullish_candle,
             "5日MA": ma5_val,
             "5日乖離率": ma5_dev,
             "5日MA方向": ma5_direction
@@ -546,12 +560,13 @@ for c in st.session_state.watchlist:
             "利回り": p_row.iloc[0]["利回り"],
             "中期トレンド上": p_row.iloc[0]["中期トレンド上"] if "中期トレンド上" in p_row.columns else None,
             "短期反発中": p_row.iloc[0]["短期反発中"] if "短期反発中" in p_row.columns else None,
+            "陽線": p_row.iloc[0]["陽線"] if "陽線" in p_row.columns else None,
             "5日MA": p_row.iloc[0]["5日MA"] if "5日MA" in p_row.columns else np.nan,
             "5日乖離率": p_row.iloc[0]["5日乖離率"] if "5日乖離率" in p_row.columns else np.nan,
             "5日MA方向": p_row.iloc[0]["5日MA方向"] if "5日MA方向" in p_row.columns else None
         })
     else:
-        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None, "短期反発中": None, "5日MA": np.nan, "5日乖離率": np.nan, "5日MA方向": None})
+        row_data.update({"現在値": np.nan, "前日差": np.nan, "前日比": np.nan, "1週": np.nan, "25日乖離": np.nan, "利回り": np.nan, "中期トレンド上": None, "短期反発中": None, "陽線": None, "5日MA": np.nan, "5日乖離率": np.nan, "5日MA方向": None})
     rows.append(row_data)
 
 df_all = pd.DataFrame(rows)
@@ -568,21 +583,37 @@ if not df_all.empty:
         sig_tab_dip, sig_tab_heat, sig_tab_yield, sig_tab_short = st.tabs(["🟢 押し目", "🔴 過熱", "💰 高利回り", "📉 短期トレンド"])
 
         with sig_tab_dip:
-            dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["前日比"] < 0) & (valid_df["中期トレンド上"] == True)].sort_values(by="25日乖離", ascending=True)
+            # 母集団：「25日線割れ ＋ 75日線上」のみ（前日比は抽出条件から外し、状態表示に回す）
+            dip_df = valid_df[(valid_df["25日乖離"] <= -1.0) & (valid_df["中期トレンド上"] == True)].copy()
             if dip_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
+                def _dip_state(row):
+                    if row["前日比"] < 0:
+                        return ("下落中", "⬇️", 2)
+                    if row["陽線"] is True:
+                        return ("反発初動", "🔵", 0)
+                    return ("反発候補", "🟡", 1)
+
+                dip_df[["状態名", "状態アイコン", "状態優先度"]] = dip_df.apply(lambda r: pd.Series(_dip_state(r)), axis=1)
+                dip_df = dip_df.sort_values(by=["状態優先度", "25日乖離"], ascending=[True, True])
+
+                n_blue = (dip_df["状態優先度"] == 0).sum()
+                n_yellow = (dip_df["状態優先度"] == 1).sum()
+                n_down = (dip_df["状態優先度"] == 2).sum()
+                st.caption(f"🔵 反発初動 {n_blue}銘柄　｜　🟡 反発候補 {n_yellow}銘柄　｜　⬇️ 下落中 {n_down}銘柄")
+
                 for _, r in dip_df.head(10).iterrows():
                     yld_val = r['利回り']
                     yld_str = f"{yld_val:.2f}%" if pd.notna(yld_val) and yld_val > 0 else "-"
                     if r['短期反発中'] is True:
-                        trend_tag = "🔄 反発初動"
+                        ma5_arrow = "5日線↑"
                     elif r['短期反発中'] is False:
-                        trend_tag = "⬇️ 下落継続中"
+                        ma5_arrow = "5日線↓"
                     else:
-                        trend_tag = ""
-                    tag_str = f", {trend_tag}" if trend_tag else ""
-                    st.markdown(f"- **{r['銘柄名']} ({r['コード']})**: 25日乖離 `{r['25日乖離']:+.1f}%`, 本日 `{r['前日比']:+.2f}%`, 利回り `{yld_str}`{tag_str}")
+                        ma5_arrow = ""
+                    ma5_str = f", {ma5_arrow}" if ma5_arrow else ""
+                    st.markdown(f"- **{r['状態アイコン']} {r['状態名']}** {r['銘柄名']} ({r['コード']}): 本日 `{r['前日比']:+.2f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`{ma5_str}, 利回り `{yld_str}`")
 
         with sig_tab_heat:
             heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
