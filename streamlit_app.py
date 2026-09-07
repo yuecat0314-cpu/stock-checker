@@ -572,6 +572,37 @@ for c in st.session_state.watchlist:
     rows.append(row_data)
 
 df_all = pd.DataFrame(rows)
+
+# -------------------------------------------------------------------------
+# 押し目状態・短期トレンド判定（シグナルタブと一覧テーブルの両方で共用）
+# -------------------------------------------------------------------------
+def compute_push_state(row):
+    # 母集団外（25日乖離が浅い、または75日線を割っている）は対象外
+    if pd.isna(row.get("25日乖離")) or pd.isna(row.get("前日比")) or row.get("中期トレンド上") is not True:
+        return None
+    if row["25日乖離"] > -1.0:
+        return None
+    if row["前日比"] < 0:
+        return ("下落中", "⬇️", 2)
+    if row.get("陽線") is True:
+        return ("反発初動", "🔵", 0)
+    return ("反発候補", "🟡", 1)
+
+def compute_short_arrow(row):
+    d = row.get("5日MA方向")
+    if d == "上向き":
+        return "↑"
+    elif d == "下向き":
+        return "↓"
+    elif d == "横ばい":
+        return "→"
+    return ""
+
+if not df_all.empty:
+    push_results = df_all.apply(lambda r: compute_push_state(r), axis=1)
+    df_all["押目アイコン"] = push_results.apply(lambda v: v[1] if v else "")
+    df_all["短期アイコン"] = df_all.apply(lambda r: compute_short_arrow(r), axis=1)
+
 update_time = datetime.now(JST).strftime("%H:%M:%S")
 
 st.caption(f"登録数: **{len(st.session_state.watchlist)} 銘柄** ｜ 時刻: **{update_time}** (約20分ディレイ)")
@@ -590,14 +621,10 @@ if not df_all.empty:
             if dip_df.empty:
                 st.success("✅ 該当する銘柄はありません。")
             else:
-                def _dip_state(row):
-                    if row["前日比"] < 0:
-                        return ("下落中", "⬇️", 2)
-                    if row["陽線"] is True:
-                        return ("反発初動", "🔵", 0)
-                    return ("反発候補", "🟡", 1)
-
-                dip_df[["状態名", "状態アイコン", "状態優先度"]] = dip_df.apply(lambda r: pd.Series(_dip_state(r)), axis=1)
+                state_results = dip_df.apply(lambda r: compute_push_state(r), axis=1)
+                dip_df["状態名"] = state_results.apply(lambda v: v[0])
+                dip_df["状態アイコン"] = state_results.apply(lambda v: v[1])
+                dip_df["状態優先度"] = state_results.apply(lambda v: v[2])
                 dip_df = dip_df.sort_values(by=["状態優先度", "25日乖離"], ascending=[True, True])
 
                 n_blue = (dip_df["状態優先度"] == 0).sum()
@@ -673,9 +700,9 @@ if not df_all.empty:
 
         sorted_df = df_target.sort_values(by=sort_col, ascending=is_ascending, na_position='last')
 
-        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り"]].copy()
+        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り", "押目アイコン", "短期アイコン"]].copy()
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
-        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示"]]
+        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
 
         def color_cells(v):
@@ -707,6 +734,8 @@ if not df_all.empty:
                 "1週": st.column_config.NumberColumn("1週騰落", width="small"),
                 "25日乖離": st.column_config.NumberColumn("25日乖離", width="small"),
                 "利回り": st.column_config.TextColumn("利回り", width="small"),
+                "押目アイコン": st.column_config.TextColumn("押目", width="small"),
+                "短期アイコン": st.column_config.TextColumn("短期", width="small"),
             }
         )
 
