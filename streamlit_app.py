@@ -408,7 +408,12 @@ if "cached_price_df" not in st.session_state:
 
 # -------------------------------------------------------------------------
 # データ一括取得関数（1銘柄時のマルチインデックス完全対応版）
+# @st.cache_data により、ブラウザのセッション（タブ）が切れても
+# アプリ全体で共有されるキャッシュとして10分間保持される。
+# これにより、スマホをバックグラウンドから復帰した際に毎回ゼロから
+# 再取得することを防ぐ。
 # -------------------------------------------------------------------------
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_watchlist_data_memory(tickers_tuple):
     if not tickers_tuple: return pd.DataFrame()
     cln = list(dict.fromkeys([norm_c(t)[:4] for t in tickers_tuple]))
@@ -533,15 +538,12 @@ if st.session_state.get("restore_result_msg"):
         st.error(msg)
 
 if c_r.button("🔄 最新データ更新", use_container_width=True):
-    with st.spinner("株価データ更新中..."):
-        st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
+    fetch_watchlist_data_memory.clear()  # 共有キャッシュを明示的に破棄して強制再取得
     st.rerun()
 
-if st.session_state.cached_price_df.empty and st.session_state.watchlist:
-    with st.spinner("初期株価データ読込中..."):
-        st.session_state.cached_price_df = fetch_watchlist_data_memory(tuple(st.session_state.watchlist))
-
-df_prices = st.session_state.cached_price_df
+with st.spinner("株価データ読込中..."):
+    df_prices = fetch_watchlist_data_memory(tuple(st.session_state.watchlist)) if st.session_state.watchlist else pd.DataFrame()
+st.session_state.cached_price_df = df_prices
 
 rows = []
 for c in st.session_state.watchlist:
