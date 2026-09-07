@@ -615,7 +615,7 @@ if not df_all.empty:
                     else:
                         ma5_arrow = ""
                     ma5_str = f", {ma5_arrow}" if ma5_arrow else ""
-                    st.markdown(f"- **{r['状態アイコン']} {r['状態名']}** {r['銘柄名']} ({r['コード']}): 本日 `{r['前日比']:+.2f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`{ma5_str}, 利回り `{yld_str}`")
+                    st.markdown(f"- **{r['状態アイコン']}** {r['銘柄名']} ({r['コード']}): 本日 `{r['前日比']:+.2f}%`, 25日乖離 `{r['25日乖離']:+.1f}%`{ma5_str}, 利回り `{yld_str}`")
 
         with sig_tab_heat:
             heat_df = valid_df[(valid_df["1週"] >= 8.0) | (valid_df["25日乖離"] >= 8.0)].sort_values(by="1週", ascending=False)
@@ -645,11 +645,11 @@ if not df_all.empty:
                     direction = r["5日MA方向"]
                     dev = r["5日乖離率"]
                     if direction == "上向き":
-                        label, arrow = "🟢 短期上昇", "↑"
+                        label, arrow = "🟢", "↑"
                     elif direction == "下向き":
-                        label, arrow = "🔴 短期下降", "↓"
+                        label, arrow = "🔴", "↓"
                     else:
-                        label, arrow = "🟡 短期横ばい", "→"
+                        label, arrow = "🟡", "→"
                     ma5_str = f"{r['5日MA']:,.1f}円" if pd.notna(r['5日MA']) else "-"
                     cur_str = f"{r['現在値']:,.1f}円" if pd.notna(r['現在値']) else "-"
                     st.markdown(
