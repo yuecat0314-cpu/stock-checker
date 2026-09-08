@@ -63,6 +63,7 @@ def load_watchlist_data():
                 "shares": float(row["shares"]) if pd.notna(row.get("shares")) else 0.0,
                 "gain_pct": float(row["gain_pct"]) if pd.notna(row.get("gain_pct")) else 20.0,
                 "annual_div": float(row["annual_div"]) if pd.notna(row.get("annual_div")) else 0.0,
+                "div_months": str(row["div_months"]).strip() if pd.notna(row.get("div_months")) else "",
             }
         return watchlist, company_tags, portfolio_details
     except Exception as e:
@@ -82,8 +83,9 @@ def save_watchlist_data(watchlist, company_tags, portfolio_details):
                 "shares": float(d.get("shares", 0.0)),
                 "gain_pct": float(d.get("gain_pct", 20.0)),
                 "annual_div": float(d.get("annual_div", 0.0)),
+                "div_months": str(d.get("div_months", "")),
             })
-        df = pd.DataFrame(rows, columns=["code", "tag", "buy_price", "shares", "gain_pct", "annual_div"])
+        df = pd.DataFrame(rows, columns=["code", "tag", "buy_price", "shares", "gain_pct", "annual_div", "div_months"])
         conn.update(worksheet=GSHEET_WORKSHEET, data=df)
     except Exception as e:
         st.error("⚠️ Google Sheets保存エラー: " + _format_gsheets_error(e))
@@ -546,12 +548,17 @@ with st.spinner("株価データ読込中..."):
 st.session_state.cached_price_df = df_prices
 
 rows = []
+current_month = datetime.now(JST).month
 for c in st.session_state.watchlist:
     tag = st.session_state.company_tags.get(c, "監視")
     name = get_company_name(c)
     p_row = df_prices[df_prices["コード"] == c] if not df_prices.empty and "コード" in df_prices.columns else pd.DataFrame()
-    
-    row_data = {"状態": tag, "コード": c, "銘柄名": name}
+
+    div_months_str = st.session_state.portfolio_details.get(c, {}).get("div_months", "")
+    div_months_list = [int(m) for m in div_months_str.split(",") if m.strip().isdigit()] if div_months_str else []
+    is_div_month = current_month in div_months_list
+
+    row_data = {"状態": tag, "コード": c, "銘柄名": name, "権利月": is_div_month}
     if not p_row.empty:
         row_data.update({
             "現在値": p_row.iloc[0]["現在値"],
@@ -704,6 +711,7 @@ if not df_all.empty:
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
         disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
+        is_div_month_series = sorted_df["権利月"]
 
         def color_cells(v):
             if pd.isna(v): return ''
@@ -712,6 +720,12 @@ if not df_all.empty:
                 elif v < 0: return 'color: #60a5fa; font-weight: 600;'
             return ''
 
+        def highlight_div_month(row):
+            # 保有銘柄の権利確定月（今月）に該当する行の背景を薄いオレンジにする
+            if is_div_month_series.loc[row.name] is True:
+                return ['background-color: #fff3cd'] * len(row)
+            return [''] * len(row)
+
         styler = disp_df.style
         map_fn = styler.map if hasattr(styler, 'map') else styler.applymap
         styled = map_fn(color_cells, subset=['前日比', '1週', '25日乖離']).format({
@@ -719,7 +733,7 @@ if not df_all.empty:
             '前日比': '{:+.2f}%',
             '1週': '{:+.2f}%',
             '25日乖離': '{:+.1f}%'
-        }, na_rep='-')
+        }, na_rep='-').apply(highlight_div_month, axis=1)
         
         st.dataframe(
             styled,
@@ -979,12 +993,17 @@ with st.sidebar.expander("⚖️ 保有銘柄の詳細設定", expanded=False):
             n_shares = st.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.5f", key=f"sh_{target_hc}")
             a_div = st.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
 
+            saved_months_str = saved_info.get("div_months", "")
+            saved_months_list = [int(m) for m in saved_months_str.split(",") if m.strip().isdigit()] if saved_months_str else []
+            div_months_sel = st.multiselect("配当月（権利確定月）", list(range(1, 13)), default=saved_months_list, format_func=lambda m: f"{m}月", key=f"dm_{target_hc}")
+
             if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}", use_container_width=True):
                 st.session_state.portfolio_details[target_hc] = {
                     "buy_price": b_price,
                     "shares": n_shares,
                     "gain_pct": float(saved_info.get("gain_pct", 20.0)),
-                    "annual_div": a_div
+                    "annual_div": a_div,
+                    "div_months": ",".join(str(m) for m in sorted(div_months_sel))
                 }
                 save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
                 st.success(f"{target_name} の設定を保存しました！")
