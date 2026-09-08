@@ -558,7 +558,7 @@ for c in st.session_state.watchlist:
     div_months_list = [int(m) for m in div_months_str.split(",") if m.strip().isdigit()] if div_months_str else []
     is_div_month = current_month in div_months_list
 
-    row_data = {"状態": tag, "コード": c, "銘柄名": name, "権利月": is_div_month}
+    row_data = {"状態": tag, "コード": c, "銘柄名": name, "権利月": is_div_month, "確定月": div_months_str if div_months_str else "-"}
     if not p_row.empty:
         row_data.update({
             "現在値": p_row.iloc[0]["現在値"],
@@ -707,9 +707,9 @@ if not df_all.empty:
 
         sorted_df = df_target.sort_values(by=sort_col, ascending=is_ascending, na_position='last')
 
-        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り", "押目アイコン", "短期アイコン"]].copy()
+        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り", "押目アイコン", "短期アイコン", "確定月"]].copy()
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
-        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン"]]
+        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン", "確定月"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
         is_div_month_series = sorted_df["権利月"]
 
@@ -750,6 +750,7 @@ if not df_all.empty:
                 "利回り": st.column_config.TextColumn("利回り", width="small"),
                 "押目アイコン": st.column_config.TextColumn("押目", width="small"),
                 "短期アイコン": st.column_config.TextColumn("短期", width="small"),
+                "確定月": st.column_config.TextColumn("確定月", width="small"),
             }
         )
 
@@ -988,22 +989,32 @@ with st.sidebar.expander("⚖️ 保有銘柄の詳細設定", expanded=False):
             saved_info = st.session_state.portfolio_details.get(target_hc, {"buy_price": 0.0, "shares": 0, "gain_pct": 20.0, "annual_div": 0.0})
 
             st.caption(f"📌 {target_name} ({target_hc}) ｜ 現在値: {cur_p:,.1f} 円")
+            st.caption(f"現在の設定 → 取得単価: {saved_info.get('buy_price', 0.0):,.1f}円 ／ 株数: {saved_info.get('shares', 0.0):,.5f} ／ 年間配当: {saved_info.get('annual_div', 0.0):,.2f}円 ／ 配当月: {saved_info.get('div_months', '') or '-'}")
 
-            b_price = st.number_input("取得単価 (円)", min_value=0.0, value=float(saved_info.get("buy_price", 0.0)), step=1.0, format="%.1f", key=f"bp_{target_hc}")
-            n_shares = st.number_input("保持株数", min_value=0.0, value=float(saved_info.get("shares", 0.0)), step=1.0, format="%.5f", key=f"sh_{target_hc}")
-            a_div = st.number_input("年間配当金(1株・円)", min_value=0.0, value=float(saved_info.get("annual_div", 0.0)), step=0.5, format="%.2f", key=f"ad_{target_hc}")
-
-            saved_months_str = saved_info.get("div_months", "")
-            saved_months_list = [int(m) for m in saved_months_str.split(",") if m.strip().isdigit()] if saved_months_str else []
-            div_months_sel = st.multiselect("配当月（権利確定月）", list(range(1, 13)), default=saved_months_list, format_func=lambda m: f"{m}月", key=f"dm_{target_hc}")
+            b_price_in = st.number_input("取得単価 (円)", min_value=0.0, value=None, step=1.0, format="%.1f", placeholder="未入力なら前回値を維持", key=f"bp_{target_hc}")
+            n_shares_in = st.number_input("保持株数", min_value=0.0, value=None, step=1.0, format="%.5f", placeholder="未入力なら前回値を維持", key=f"sh_{target_hc}")
+            a_div_in = st.number_input("年間配当金(1株・円)", min_value=0.0, value=None, step=0.5, format="%.2f", placeholder="未入力なら前回値を維持", key=f"ad_{target_hc}")
+            div_months_in = st.text_input("配当月（権利確定月・カンマ区切り）", value="", placeholder="例: 6,12 や 3　未入力なら前回値を維持", key=f"dm_{target_hc}")
 
             if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}", use_container_width=True):
+                b_price = b_price_in if b_price_in is not None else float(saved_info.get("buy_price", 0.0))
+                n_shares = n_shares_in if n_shares_in is not None else float(saved_info.get("shares", 0.0))
+                a_div = a_div_in if a_div_in is not None else float(saved_info.get("annual_div", 0.0))
+                if div_months_in.strip():
+                    parsed_months = sorted(set(
+                        int(m.strip()) for m in div_months_in.split(",")
+                        if m.strip().isdigit() and 1 <= int(m.strip()) <= 12
+                    ))
+                    div_months_final = ",".join(str(m) for m in parsed_months)
+                else:
+                    div_months_final = saved_info.get("div_months", "")
+
                 st.session_state.portfolio_details[target_hc] = {
                     "buy_price": b_price,
                     "shares": n_shares,
                     "gain_pct": float(saved_info.get("gain_pct", 20.0)),
                     "annual_div": a_div,
-                    "div_months": ",".join(str(m) for m in sorted(div_months_sel))
+                    "div_months": div_months_final
                 }
                 save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
                 st.success(f"{target_name} の設定を保存しました！")
