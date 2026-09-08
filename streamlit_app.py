@@ -771,9 +771,6 @@ if not df_all.empty:
         display_sortable_dataframe(df_all[df_all["状態"] == "趣味"], "hobby", "コード")
 
     with tab_profit:
-        st.markdown("##### ⚖️ 含み益と配当金の釣り合い管理")
-        st.caption("保有銘柄の評価損益が年間配当金の何年分に相当するかを確認できます。")
-        
         hold_codes = df_all[df_all["状態"] == "保有"]["コード"].tolist()
         
         if not hold_codes:
@@ -781,10 +778,6 @@ if not df_all.empty:
         else:
             if "portfolio_details" not in st.session_state:
                 st.session_state.portfolio_details = {}
-
-            st.caption("💡 取得単価・保持株数・年間配当金の編集は、左サイドバーの「⚖️ 保有銘柄の詳細設定」から行えます。")
-
-            st.divider()
 
             profit_rows = []
             for hc in hold_codes:
@@ -798,6 +791,8 @@ if not df_all.empty:
                 bp = det.get("buy_price", 0.0)
                 sh = det.get("shares", 0)
                 ad = det.get("annual_div", 0.0)
+                div_months_disp = p_match.iloc[0]["確定月"] if not p_match.empty and "確定月" in p_match.columns else "-"
+                is_div_month_row = bool(p_match.iloc[0]["権利月"]) if not p_match.empty and "権利月" in p_match.columns else False
 
                 p_loss_yen = (cur_p - bp) * sh if bp > 0 and sh > 0 else np.nan
                 p_loss_pct = ((cur_p - bp) / bp) * 100 if bp > 0 else np.nan
@@ -829,7 +824,9 @@ if not df_all.empty:
                     "損益率": p_loss_pct,
                     "年間配当総額": annual_div_total,
                     "YOC(取得利回り)": yoc,
-                    "配当何年分": div_multiple
+                    "配当何年分": div_multiple,
+                    "確定月": div_months_disp,
+                    "権利月フラグ": is_div_month_row
                 })
 
             if profit_rows:
@@ -842,14 +839,19 @@ if not df_all.empty:
 
                 sorted_pdf = pdf.sort_values(by=p_sort_col, ascending=p_ascending, na_position='last')
 
-                st.markdown("##### 📊 評価損益 ✕ 配当金の釣り合い一覧")
-                
                 def color_profit_cells(v):
                     if pd.isna(v): return ''
                     if isinstance(v, (int, float)):
                         if v > 0: return 'color: #f87171; font-weight: 600;'
                         elif v < 0: return 'color: #60a5fa; font-weight: 600;'
                     return ''
+
+                is_div_month_pdf_series = sorted_pdf["権利月フラグ"]
+
+                def highlight_profit_div_month(row):
+                    if is_div_month_pdf_series.loc[row.name] is True:
+                        return ['background-color: #fff3cd'] * len(row)
+                    return [''] * len(row)
 
                 p_styler = sorted_pdf.style
                 p_map_fn = p_styler.map if hasattr(p_styler, 'map') else p_styler.applymap
@@ -861,7 +863,7 @@ if not df_all.empty:
                     '年間配当総額': '{:,.0f} 円',
                     'YOC(取得利回り)': '{:.2f}%',
                     '配当何年分': '{:.1f}年分'
-                }, na_rep='-')
+                }, na_rep='-').apply(highlight_profit_div_month, axis=1)
 
                 st.dataframe(
                     p_styled,
@@ -878,6 +880,8 @@ if not df_all.empty:
                         "年間配当総額": st.column_config.NumberColumn("年間配当総額", width="small"),
                         "YOC(取得利回り)": st.column_config.NumberColumn("YOC", width="small"),
                         "配当何年分": st.column_config.NumberColumn("配当何年分", width="small"),
+                        "確定月": st.column_config.TextColumn("確定月", width="small"),
+                        "権利月フラグ": None,
                     }
                 )
 
@@ -991,15 +995,24 @@ with st.sidebar.expander("⚖️ 保有銘柄の詳細設定", expanded=False):
             st.caption(f"📌 {target_name} ({target_hc}) ｜ 現在値: {cur_p:,.1f} 円")
             st.caption(f"現在の設定 → 取得単価: {saved_info.get('buy_price', 0.0):,.1f}円 ／ 株数: {saved_info.get('shares', 0.0):,.5f} ／ 年間配当: {saved_info.get('annual_div', 0.0):,.2f}円 ／ 配当月: {saved_info.get('div_months', '') or '-'}")
 
-            b_price_in = st.number_input("取得単価 (円)", min_value=0.0, value=None, step=1.0, format="%.1f", placeholder="未入力なら前回値を維持", key=f"bp_{target_hc}")
-            n_shares_in = st.number_input("保持株数", min_value=0.0, value=None, step=1.0, format="%.5f", placeholder="未入力なら前回値を維持", key=f"sh_{target_hc}")
-            a_div_in = st.number_input("年間配当金(1株・円)", min_value=0.0, value=None, step=0.5, format="%.2f", placeholder="未入力なら前回値を維持", key=f"ad_{target_hc}")
+            b_price_in = st.text_input("取得単価 (円)", value="", placeholder="例: 419.4　未入力なら前回値を維持", key=f"bp_{target_hc}")
+            n_shares_in = st.text_input("保持株数", value="", placeholder="例: 100 や 0.26014　未入力なら前回値を維持", key=f"sh_{target_hc}")
+            a_div_in = st.text_input("年間配当金(1株・円)", value="", placeholder="例: 20　未入力なら前回値を維持", key=f"ad_{target_hc}")
             div_months_in = st.text_input("配当月（権利確定月・カンマ区切り）", value="", placeholder="例: 6,12 や 3　未入力なら前回値を維持", key=f"dm_{target_hc}")
 
+            def _parse_float_or_keep(text_val, fallback):
+                text_val = text_val.strip()
+                if not text_val:
+                    return float(fallback)
+                try:
+                    return float(text_val)
+                except ValueError:
+                    return float(fallback)
+
             if st.button("💾 この銘柄の設定を保存する", type="primary", key=f"save_btn_{target_hc}", use_container_width=True):
-                b_price = b_price_in if b_price_in is not None else float(saved_info.get("buy_price", 0.0))
-                n_shares = n_shares_in if n_shares_in is not None else float(saved_info.get("shares", 0.0))
-                a_div = a_div_in if a_div_in is not None else float(saved_info.get("annual_div", 0.0))
+                b_price = _parse_float_or_keep(b_price_in, saved_info.get("buy_price", 0.0))
+                n_shares = _parse_float_or_keep(n_shares_in, saved_info.get("shares", 0.0))
+                a_div = _parse_float_or_keep(a_div_in, saved_info.get("annual_div", 0.0))
                 if div_months_in.strip():
                     parsed_months = sorted(set(
                         int(m.strip()) for m in div_months_in.split(",")
