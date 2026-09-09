@@ -428,8 +428,6 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
 
 if "cached_price_df" not in st.session_state:
     st.session_state.cached_price_df = pd.DataFrame()
-if "manual_div_overrides" not in st.session_state:
-    st.session_state.manual_div_overrides = {}
 
 # -------------------------------------------------------------------------
 # データ一括取得関数（1銘柄時のマルチインデックス完全対応版）
@@ -585,10 +583,11 @@ for c in st.session_state.watchlist:
     if not p_row.empty:
         cur_p_for_override = p_row.iloc[0]["現在値"]
         yield_val = p_row.iloc[0]["利回り"]
-        # 分割調整ズレ等で数値がおかしい銘柄だけ、手動上書き値があれば利回りを再計算する
-        override_amt = st.session_state.manual_div_overrides.get(c)
-        if override_amt is not None and pd.notna(cur_p_for_override) and cur_p_for_override > 0:
-            yield_val = (override_amt / cur_p_for_override) * 100
+        # 保有詳細設定・手動上書きで年間配当額が入力されていれば、
+        # yfinance側の値より優先する（分割調整ズレ等の是正・保有銘柄の実入力反映）
+        manual_annual_div = st.session_state.portfolio_details.get(c, {}).get("annual_div", 0.0)
+        if manual_annual_div and manual_annual_div > 0 and pd.notna(cur_p_for_override) and cur_p_for_override > 0:
+            yield_val = (manual_annual_div / cur_p_for_override) * 100
         row_data.update({
             "現在値": p_row.iloc[0]["現在値"],
             "前日差": p_row.iloc[0]["前日差"],
@@ -1003,31 +1002,41 @@ with st.sidebar.expander("🔍 銘柄の個別3軸診断", expanded=True):
     else:
         st.info("登録銘柄がありません。")
 
-with st.sidebar.expander("🛠 配当額の例外的な手動上書き（保存されません）", expanded=False):
-    st.caption("分割調整のズレなどで数値がおかしい銘柄だけ、一時的に年間配当額を上書きできます。この設定はブラウザを閉じると消えます（Googleシートには保存されません）。")
+with st.sidebar.expander("🛠 配当額の例外的な手動上書き", expanded=False):
+    st.caption("分割調整のズレなどで数値がおかしい銘柄だけ、年間配当額を上書きできます。保有銘柄と同じ「年間配当金」欄に保存されるため、Googleシートに永続化されます（保有タブの評価にも反映されます）。")
     if st.session_state.watchlist:
         override_options = [f"{c} - {get_company_name(c)}" for c in st.session_state.watchlist]
         override_target_opt = st.selectbox("対象銘柄", override_options, key="div_override_sel_box")
         if override_target_opt:
             override_target = norm_c(override_target_opt.split(" - ")[0])[:4]
-            current_override = st.session_state.manual_div_overrides.get(override_target)
-            if current_override is not None:
-                st.caption(f"現在の上書き値: {current_override:,.2f}円/年")
+            override_saved_info = st.session_state.portfolio_details.get(override_target, {})
+            current_override = override_saved_info.get("annual_div", 0.0)
+            if current_override and current_override > 0:
+                st.caption(f"現在の設定値: {current_override:,.2f}円/年")
             override_amount_in = st.text_input("年間配当額（円）", value="", placeholder="例: 25　空欄で反映しない", key=f"div_override_amt_{override_target}")
             col_ov1, col_ov2 = st.columns(2)
             if col_ov1.button("適用", key=f"div_override_apply_{override_target}", use_container_width=True):
                 try:
                     amt = float(override_amount_in.strip())
                     if amt > 0:
-                        st.session_state.manual_div_overrides[override_target] = amt
-                        st.success("上書きしました。")
+                        st.session_state.portfolio_details[override_target] = {
+                            "buy_price": float(override_saved_info.get("buy_price", 0.0)),
+                            "shares": float(override_saved_info.get("shares", 0.0)),
+                            "gain_pct": float(override_saved_info.get("gain_pct", 20.0)),
+                            "annual_div": amt,
+                            "div_months": override_saved_info.get("div_months", "")
+                        }
+                        save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
+                        st.success("上書きして保存しました。")
                         st.rerun()
                     else:
                         st.error("0より大きい金額を入力してください。")
                 except ValueError:
                     st.error("数値を入力してください。")
             if col_ov2.button("解除", key=f"div_override_clear_{override_target}", use_container_width=True):
-                st.session_state.manual_div_overrides.pop(override_target, None)
+                if override_target in st.session_state.portfolio_details:
+                    st.session_state.portfolio_details[override_target]["annual_div"] = 0.0
+                    save_watchlist_data(st.session_state.watchlist, st.session_state.company_tags, st.session_state.portfolio_details)
                 st.rerun()
     else:
         st.info("登録銘柄がありません。")
