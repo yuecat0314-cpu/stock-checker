@@ -103,7 +103,7 @@ if "watchlist" not in st.session_state:
 def load_jpx_master():
     if not os.path.exists("jpx_master.csv"):
         st.warning("⚠️ 【マスター読込エラー】`jpx_master.csv` ファイルが見つかりません。")
-        return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
+        return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示", "業種"])
     
     last_error = None
     for enc in ["utf-8", "cp932", "shift_jis", "utf-8-sig"]:
@@ -119,6 +119,10 @@ def load_jpx_master():
                 df["コード"] = df[code_col].astype(str).str.strip().str[:4].str.zfill(4)
                 df["銘柄名"] = df[name_col].astype(str).str.strip()
                 df["オプション表示"] = df["コード"] + " - " + df["銘柄名"]
+                if "業種" in df.columns:
+                    df["業種"] = df["業種"].astype(str).str.strip()
+                else:
+                    df["業種"] = ""
                 return df
             else:
                 last_error = f"必須カラムが見つかりません (encoding={enc}, 検出列: {list(df.columns)})"
@@ -127,7 +131,7 @@ def load_jpx_master():
             continue
             
     st.error(f"❌ `jpx_master.csv` の読込に失敗しました。\n詳細な原因: {last_error}")
-    return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示"])
+    return pd.DataFrame(columns=["コード", "銘柄名", "オプション表示", "業種"])
 
 jpx_df = load_jpx_master()
 jpx_options = jpx_df["オプション表示"].tolist() if not jpx_df.empty else []
@@ -139,6 +143,15 @@ def get_company_name(code):
         if not match.empty:
             return match.iloc[0]["銘柄名"]
     return f"銘柄-{clean_c}"
+
+def get_sector(code):
+    clean_c = str(code).zfill(4)[:4]
+    if not jpx_df.empty:
+        match = jpx_df[jpx_df["コード"] == clean_c]
+        if not match.empty:
+            sec = match.iloc[0].get("業種", "")
+            return sec if sec and sec != "nan" else ""
+    return ""
 
 def norm_c(c):
     return str(c).strip().zfill(4)[:4]
@@ -228,8 +241,8 @@ def show_detail_dialog(code, name, status, cur_p=None, ma25_dev=None):
             bal = t.balance_sheet
             cf = t.cashflow
             hist = t.history(period="1y", auto_adjust=False)
-            sector = info.get("sector", "") or ""
-            is_financial = any(k in sector for k in ["Financial", "Bank", "Insurance"])
+            sector = get_sector(code)
+            is_financial = any(k in sector for k in ["銀行業", "保険業", "証券、商品先物取引業", "その他金融業"])
 
             h_scores, h_descs = {}, {}
 
@@ -558,7 +571,7 @@ for c in st.session_state.watchlist:
     div_months_list = [int(m) for m in div_months_str.split(",") if m.strip().isdigit()] if div_months_str else []
     is_div_month = current_month in div_months_list
 
-    row_data = {"状態": tag, "コード": c, "銘柄名": name, "権利月": is_div_month, "確定月": div_months_str if div_months_str else "-"}
+    row_data = {"状態": tag, "コード": c, "銘柄名": name, "業種": get_sector(c), "権利月": is_div_month, "確定月": div_months_str if div_months_str else "-"}
     if not p_row.empty:
         row_data.update({
             "現在値": p_row.iloc[0]["現在値"],
@@ -707,9 +720,9 @@ if not df_all.empty:
 
         sorted_df = df_target.sort_values(by=sort_col, ascending=is_ascending, na_position='last')
 
-        disp_df = sorted_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り", "押目アイコン", "短期アイコン", "確定月"]].copy()
+        disp_df = sorted_df[["状態", "コード", "銘柄名", "業種", "現在値", "前日比", "1週", "25日乖離", "利回り", "押目アイコン", "短期アイコン", "確定月"]].copy()
         disp_df['利回り表示'] = disp_df['利回り'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x > 0 else "-")
-        disp_df = disp_df[["状態", "コード", "銘柄名", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン", "確定月"]]
+        disp_df = disp_df[["状態", "コード", "銘柄名", "業種", "現在値", "前日比", "1週", "25日乖離", "利回り表示", "押目アイコン", "短期アイコン", "確定月"]]
         disp_df.rename(columns={"利回り表示": "利回り"}, inplace=True)
         is_div_month_series = sorted_df["権利月"]
 
@@ -743,6 +756,7 @@ if not df_all.empty:
                 "状態": st.column_config.TextColumn("所属", width="small"),
                 "コード": st.column_config.TextColumn("コード", width="small"),
                 "銘柄名": st.column_config.TextColumn("銘柄名", width="medium"),
+                "業種": st.column_config.TextColumn("業種", width="small"),
                 "現在値": st.column_config.NumberColumn("現在値", width="small"),
                 "前日比": st.column_config.NumberColumn("前日比", width="small"),
                 "1週": st.column_config.NumberColumn("1週騰落", width="small"),
